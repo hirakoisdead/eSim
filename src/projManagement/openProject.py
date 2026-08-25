@@ -51,6 +51,10 @@ class OpenProjectInfo(QtWidgets.QWidget):
             )
         )
 
+        if not self.projDir:
+            self.obj_Appconfig.print_info('No Project opened')
+            return
+
         if self.obj_validation.validateOpenproj(self.projDir):
             self.obj_Appconfig.current_project['ProjectName'] = str(
                 self.projDir)
