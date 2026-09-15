@@ -188,3 +188,46 @@ def _detect_frequency(time_data: "np.ndarray",
         return None
     return 1.0 / mean_p
 
+
+
+def minmax_decimate(x: "np.ndarray", y: "np.ndarray",
+                    n_bins: int) -> "tuple[np.ndarray, np.ndarray]":
+    """Peak-preserving min/max decimation for draw-time line data.
+
+    Splits the samples into ~n_bins contiguous index bins and keeps, per bin,
+    the two samples holding that bin's minimum and maximum y (in encounter
+    order). The rendered envelope — every spike and glitch included — is
+    pixel-identical to plotting the full array once bins are narrower than a
+    pixel column, but matplotlib only has to transform/rasterise ~4*n_bins
+    points instead of the whole trace.
+
+    Returns the inputs unchanged when they are already small enough that
+    decimation would not pay for itself. Duplicate indices from constant bins
+    (min == max) are kept — a repeated point is harmless. The true first and
+    last samples are always included so the drawn x-span matches the raw data.
+    """
+    n = min(len(x), len(y))
+    if n_bins < 1 or n <= 4 * n_bins:
+        return x[:n], y[:n]
+    stride = n // n_bins
+    nb = n // stride
+    usable = nb * stride
+    ys = np.asarray(y[:usable]).reshape(nb, stride)
+    offsets = np.arange(nb) * stride
+    imin = ys.argmin(axis=1) + offsets
+    imax = ys.argmax(axis=1) + offsets
+    lo = np.minimum(imin, imax)
+    hi = np.maximum(imin, imax)
+    idx = np.empty(2 * nb, dtype=np.intp)
+    idx[0::2] = lo
+    idx[1::2] = hi
+    parts = [idx]
+    if idx[0] != 0:
+        parts.insert(0, np.array([0], dtype=np.intp))
+    if usable < n:
+        parts.append(np.arange(usable, n, dtype=np.intp))
+    elif idx[-1] != n - 1:
+        parts.append(np.array([n - 1], dtype=np.intp))
+    if len(parts) > 1:
+        idx = np.concatenate(parts)
+    return x[idx], y[idx]

@@ -1,19 +1,30 @@
 import os.path
 from configparser import ConfigParser
+from configuration import paths
 
 
 class Appconfig:
-    if os.name == 'nt':
-        home = os.path.join('library', 'config')
-    else:
-        home = os.path.expanduser('~')
+    home = paths.user_home()
+
+    # The model-parameter root comes from the code that is RUNNING, never from
+    # ~/.esim/config.ini. windows_bootstrap rewrites eSim_HOME on every launch,
+    # so a second eSim started from a different root (a dev checkout beside an
+    # install) silently repoints the shared config while this process is alive.
+    # This class and NGHDL's Appconfig then answer different questions about
+    # the same library: the Verilog side refuses to create a model because it
+    # "already exists" in a Nghdl/ directory the NGHDL remover -- reading the
+    # other root -- reports as empty, so the block can neither be built nor
+    # removed. Anchoring to paths.library_path() makes that split impossible.
+    xml_loc = paths.library_path('modelParamXML')
 
     # Reading all variables from eSim config.ini
     parser_esim = ConfigParser()
-    parser_esim.read(os.path.join(home, os.path.join('.esim', 'config.ini')))
+    parser_esim.read(paths.esim_config_path('config.ini'))
     try:
+        # src_home stays config-derived: its only readers probe for the
+        # pre-relocation KiCad symbol dir of an *installed* eSim, which the
+        # running root does not name.
         src_home = parser_esim.get('eSim', 'eSim_HOME')
-        xml_loc = os.path.join(src_home, 'library/modelParamXML')
         lib_loc = os.path.expanduser('~')
     except BaseException:
         pass

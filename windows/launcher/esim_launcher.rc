@@ -1,0 +1,36 @@
+// Resources for eSim.exe. The icon is images\esim.ico -- the eSim mark, built
+// from images\logo.png by windows\branding\make-app-icon.py -- and the setup
+// exe and the shortcuts it creates carry the SAME file, so the installer, the
+// exe, the taskbar and Add/Remove Programs all present one identity. (This
+// used to be workspace.ico: generic briefcase clipart, no eSim in it.)
+// Version fields are static (2.6 product line); bump them together with the
+// repo VERSION file.
+#include <winver.h>
+
+1 ICON "esim.ico"
+
+1 VERSIONINFO
+FILEVERSION     2,6,0,0
+PRODUCTVERSION  2,6,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "FOSSEE, IIT Bombay"
+            VALUE "FileDescription",  "eSim - Open Source EDA Tool"
+            VALUE "FileVersion",      "2.6.0.0"
+            VALUE "InternalName",     "eSim"
+            VALUE "LegalCopyright",   "GPL v3 - FOSSEE, IIT Bombay"
+            VALUE "OriginalFilename", "eSim.exe"
+            VALUE "ProductName",      "eSim"
+            VALUE "ProductVersion",   "2.6.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

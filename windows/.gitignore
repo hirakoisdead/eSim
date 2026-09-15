@@ -1,0 +1,8 @@
+build/
+downloads/
+dist/
+# build-windows.ps1 writes its stderr stream next to the *.log the root
+# .gitignore already covers; both are local packaging scratch.
+*.log.err
+# compiled by Stage-Launcher (a local test compile may drop one here too)
+launcher/eSim.exe

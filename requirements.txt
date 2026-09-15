@@ -19,6 +19,9 @@ pyparsing==3.1.4
 PyQt6>=6.5.0
 PyQt6-Qt6>=6.5.0
 PyQt6-sip>=13.5.0
+# QScintilla provides the project-file code editor. On Ubuntu install it
+# from apt (python3-pyqt6.qsci) so it matches the system Qt build. The pip
+# wheel (PyQt6-QScintilla) only works in an all-pip Qt environment.
 python-dateutil==2.9.0.post0
 scipy==1.10.1
 six==1.17.0

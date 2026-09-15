@@ -1,192 +1,385 @@
+"""Project Snapshots panel — the view over :mod:`frontEnd.SnapshotStore`.
+
+A snapshot is a point-in-time copy of a project's files so the user can
+experiment and roll back. The panel is a *global manager*: every project that
+has history shows as a top-level node, each snapshot under it, and each file
+under the snapshot (with a checkbox for partial restore).
+
+  Project ▸ Snapshot ▸ file ☐
+
+Scope rules that keep behaviour unambiguous:
+  * **Quick Backup** always targets the *active* project (named in the header),
+    so there is never a question of which project gets backed up.
+  * **Restore** writes into the project folder recorded in the snapshot, so any
+    project shown here can be rolled back, not only the active one.
+  * Restore never consumes a snapshot, and it takes an automatic
+    *Before restore* safety snapshot first, so a restore is itself undoable.
+
+The look follows the Aurora design: header (title + icon refresh), an
+alternating-row tree, and a primary/secondary/danger action bar.
+"""
+
 import os
-import re
-import shutil
-import json
-from PyQt6 import QtWidgets
+
+from PyQt6 import QtCore, QtWidgets
+
+from configuration import Dialogs
+from configuration.Appconfig import Appconfig
+from frontEnd.SnapshotStore import SnapshotStore
+
+
+# Roles stashed on each tree item so the action bar knows what is selected.
+_ROLE = QtCore.Qt.ItemDataRole.UserRole
+_KIND_LABEL = {
+    "full": "Full",
+    "single": "File",
+    "partial": "Partial",
+    "auto": "Auto",
+    "imported": "Imported",
+}
+
 
 class TimeExplorer(QtWidgets.QWidget):
 
-    if os.name == 'nt':
-        user_home = os.path.join('library', 'config')
-    else:
-        user_home = os.path.expanduser('~')
+    def __init__(self, parent=None):
+        super(TimeExplorer, self).__init__(parent)
+        self.store = SnapshotStore()
+        # Active project basename, kept for back-compat with callers that read
+        # ``current_project`` (Application.load_snapshots passes a basename).
+        self.current_project = {"ProjectName": None}
 
-    current_project = {"ProjectName": None}
-    current_project_path = {"ProjectPath": None}
+        # ---- Header bar (title + icon-only refresh) ----
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(8, 8, 8, 0)
+        header.setSpacing(6)
 
-    def __init__(self):
-        super(TimeExplorer, self).__init__()
+        self.title_label = QtWidgets.QLabel('Project Snapshots')
+        self.title_label.setProperty('cssClass', 'title')
+        header.addWidget(self.title_label)
+        header.addStretch(1)
 
-        self.setFixedHeight(200)
+        self.refresh_btn = QtWidgets.QPushButton()
+        try:
+            from frontEnd.icon_paths import refresh_icon
+            self.refresh_btn.setIcon(refresh_icon())
+        except Exception:
+            self.refresh_btn.setText('Refresh')
+        self.refresh_btn.setProperty('cssClass', 'icon')
+        self.refresh_btn.setToolTip('Refresh snapshot list')
+        self.refresh_btn.clicked.connect(self.reload)
+        header.addWidget(self.refresh_btn)
 
-        self.layout = QtWidgets.QVBoxLayout()
-        self.setLayout(self.layout)
+        # Muted caption: removes the "which project does Quick Backup hit?"
+        # ambiguity by naming the target up front.
+        self.scope_label = QtWidgets.QLabel()
+        self.scope_label.setProperty('cssClass', 'muted')
+        self.scope_label.setWordWrap(True)
 
+        # ---- Tree: project > snapshot > file ----
         self.treewidget = QtWidgets.QTreeWidget()
-        self.treewidget.setHeaderLabels(["Timeline", ""])
-        self.treewidget.setColumnWidth(0, 150)
+        self.treewidget.setHeaderLabels(['Snapshot', 'Type', 'Created'])
+        self.treewidget.setColumnWidth(0, 220)
+        self.treewidget.setColumnWidth(1, 70)
+        self.treewidget.setAlternatingRowColors(True)
+        self.treewidget.setUniformRowHeights(True)
+        self.treewidget.itemDoubleClicked.connect(self._on_double_click)
+        self.treewidget.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.treewidget.customContextMenuRequested.connect(self._open_menu)
 
-        self.treewidget.setStyleSheet(" \
-            QTreeView { border-radius: 15px; border: 1px \
-            solid gray; padding: 5px; width: 200px; height: 150px;  }\
-        ")
+        # ---- Action bar ----
+        actions = QtWidgets.QHBoxLayout()
+        actions.setContentsMargins(8, 8, 8, 8)
+        actions.setSpacing(6)
 
-        self.layout.addWidget(self.treewidget)
+        self.backup_btn = QtWidgets.QPushButton('Quick Backup')
+        # Aurora's only filled-primary class; pairs with restore=secondary /
+        # delete=danger.
+        self.backup_btn.setProperty('cssClass', 'verifierPrimary')
+        self.backup_btn.setToolTip('Back up every file in the active project')
+        self.backup_btn.clicked.connect(self.quick_backup)
 
-        self.button_layout = QtWidgets.QHBoxLayout()
-        self.restore = QtWidgets.QPushButton("Restore")
-        self.clear = QtWidgets.QPushButton("Clear")
-        self.button_layout.addWidget(self.restore)
-        self.button_layout.addWidget(self.clear)
-
-        self.layout.addLayout(self.button_layout)
-
+        # Kept under the historical attribute names so any external reference
+        # keeps working.
+        self.restore = QtWidgets.QPushButton('Restore')
+        self.restore.setProperty('cssClass', 'secondary')
+        self.restore.setToolTip(
+            'Restore the selected snapshot, or only its ticked files')
         self.restore.clicked.connect(self.restore_snapshots)
+
+        self.clear = QtWidgets.QPushButton('Delete')
+        self.clear.setProperty('cssClass', 'danger')
+        self.clear.setToolTip('Delete the selected snapshot or project history')
         self.clear.clicked.connect(self.clear_snapshots)
 
-    def add_snapshot(self, file_name, timestamp):
-        item = QtWidgets.QTreeWidgetItem([file_name, timestamp])
-        self.treewidget.addTopLevelItem(item)
+        actions.addWidget(self.backup_btn)
+        actions.addStretch(1)
+        actions.addWidget(self.restore)
+        actions.addWidget(self.clear)
 
-    def load_snapshots(self, project_name):
+        # ---- Compose ----
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        layout.addLayout(header)
+        layout.addWidget(self.scope_label)
+        layout.addWidget(self.treewidget)
+        layout.addLayout(actions)
+
+        # Floor that keeps button labels from clipping when the panel/dock is
+        # dragged small.
+        from frontEnd.theme_utils import zoom_px
+        self.setMinimumWidth(zoom_px(300))
+        self.setMinimumHeight(zoom_px(360))
+
+    def changeEvent(self, event):
+        """Re-tint the refresh icon on a live light/dark toggle.
+
+        refresh_icon() bakes the theme's text color into the SVG once, at
+        construction (icon_paths._svg_icon), and nothing re-tints it on a
+        PaletteChange — so after a toggle the glyph keeps the old theme's color
+        (dark on dark / light on light) and effectively vanishes. This mirrors
+        the ProjectExplorer.changeEvent icon-refresh convention.
+        """
+        super().changeEvent(event)
+        # Deferred by a tick: rasterising the SVG inside the handler re-enters
+        # the polish that delivered the event (theme_utils.defer_restyle).
+        if event.type() == QtCore.QEvent.Type.PaletteChange:
+            from frontEnd.theme_utils import defer_restyle
+            defer_restyle(self, self._retint_refresh_icon)
+
+    def _retint_refresh_icon(self):
+        """Deferred body of the PaletteChange branch of changeEvent."""
+        try:
+            from frontEnd.icon_paths import refresh_icon
+            self.refresh_btn.setIcon(refresh_icon())
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------ helpers
+    def _active(self):
+        """(name, path) of the live project, or (None, None)."""
+        try:
+            path = Appconfig().current_project.get("ProjectName")
+        except Exception:
+            path = None
+        if path and os.path.isdir(path):
+            return os.path.basename(os.path.normpath(path)), path
+        return None, None
+
+    def _item_info(self, item):
+        return item.data(0, _ROLE) if item is not None else None
+
+    def _iter_items(self):
+        it = QtWidgets.QTreeWidgetItemIterator(self.treewidget)
+        while it.value():
+            yield it.value()
+            it += 1
+
+    def _checked_files(self):
+        """Ticked file items grouped by (project, sid) -> [basenames]."""
+        groups = {}
+        for item in self._iter_items():
+            info = self._item_info(item)
+            if not info or info.get("kind") != "file":
+                continue
+            if item.checkState(0) == QtCore.Qt.CheckState.Checked:
+                key = (info["project"], info["sid"])
+                groups.setdefault(key, []).append(info["name"])
+        return groups
+
+    # ------------------------------------------------------------ rendering
+    def reload(self):
+        """Rebuild the whole tree from disk."""
         self.treewidget.clear()
-        snapshot_dir = os.path.join(self.user_home, ".esim", "history", project_name)
+        active_name, active_path = self._active()
+
+        if active_name:
+            self.scope_label.setText(
+                "Quick Backup will back up the active project: "
+                "“%s”." % active_name)
+        else:
+            self.scope_label.setText(
+                "No active project — open one to use Quick Backup.")
+
+        for project in self.store.list_projects():
+            proj_item = QtWidgets.QTreeWidgetItem([project, "", ""])
+            proj_item.setData(0, _ROLE, {"kind": "project", "project": project})
+            if project == active_name:
+                font = proj_item.font(0)
+                font.setBold(True)
+                proj_item.setFont(0, font)
+                proj_item.setText(0, "%s  • active" % project)
+            self.treewidget.addTopLevelItem(proj_item)
+
+            for snap in self.store.list_snapshots(project):
+                snap_item = QtWidgets.QTreeWidgetItem([
+                    snap.label,
+                    _KIND_LABEL.get(snap.kind, snap.kind.title()),
+                    snap.created_display,
+                ])
+                snap_item.setData(0, _ROLE, {
+                    "kind": "snapshot", "project": project, "sid": snap.id})
+                snap_item.setToolTip(
+                    0, "%d file(s)" % len(snap.files))
+                proj_item.addChild(snap_item)
+
+                for name in snap.files:
+                    file_item = QtWidgets.QTreeWidgetItem([name, "", ""])
+                    file_item.setFlags(
+                        file_item.flags()
+                        | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                    file_item.setCheckState(
+                        0, QtCore.Qt.CheckState.Unchecked)
+                    file_item.setData(0, _ROLE, {
+                        "kind": "file", "project": project,
+                        "sid": snap.id, "name": name})
+                    snap_item.addChild(file_item)
+
+            if project == active_name:
+                proj_item.setExpanded(True)
+
+    # Back-compat shims --------------------------------------------------
+    def load_snapshots(self, project_name):
+        """Set the active project (by basename) and rebuild the tree."""
         self.current_project["ProjectName"] = project_name
-        if not os.path.exists(snapshot_dir):
-            return
-        pattern = re.compile(r"(.+)\((\d{1,2}\.\d{2} [APM]{2} \d{2}-\d{2}-\d{4})\)$")
-        for filename in os.listdir(snapshot_dir):
-            match = pattern.match(filename)
-            if match:
-                file_name = match.group(1)
-                timestamp = match.group(2)
-                self.add_snapshot(file_name, timestamp)
-            else:
-                print(f"Skipping unmatched snapshot file: {filename}")
+        self.reload()
 
     def load_last_snapshots(self):
-        try:
-            path = os.path.join(self.user_home, ".esim", "last_project.json")
-            with open(path, "r") as f:
-                data = json.load(f)
-                project_path = data.get("ProjectName", None)
-                self.current_project_path["ProjectPath"] = project_path
-                if project_path and os.path.exists(project_path):
-                    project_name = os.path.basename(project_path)
-                    self.current_project["ProjectName"] = project_name
-                    self.load_snapshots(project_name)
-        except Exception as e:
-            print(f"Error loading last snapshots: {e}")
+        """Startup hook: render whatever history exists on disk."""
+        self.reload()
 
-    def clear_snapshots(self):
-        selected = self.treewidget.selectedItems()
-        project_name = self.current_project["ProjectName"]
-        if not project_name:
+    def add_snapshot(self, file_name=None, timestamp=None):
+        """Legacy entry point; snapshots now self-register, so just refresh."""
+        self.reload()
+
+    # ------------------------------------------------------------ commands
+    def quick_backup(self):
+        """Snapshot every file in the *active* project (unambiguous target)."""
+        name, path = self._active()
+        if not name:
+            Dialogs.warning(
+                self, "No Active Project",
+                "Open a project first to back it up.")
             return
-        snapshot_dir = os.path.join(self.user_home, ".esim", "history", project_name)
-
-        if selected:
-            item = selected[0]
-            file_name = item.text(0)
-            timestamp = item.text(1)
-
-            snapshot_filename = f"{file_name}({timestamp})"
-            snapshot_path = os.path.join(snapshot_dir, snapshot_filename)
-
-            confirm = QtWidgets.QMessageBox.question(
-                self, "Confirm Deletion",
-                f"Are you sure you want to delete this snapshot?\n\n{file_name}",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-            )
-
-            if confirm == QtWidgets.QMessageBox.Yes:
-                try:
-                    os.remove(snapshot_path)
-                    self.treewidget.takeTopLevelItem(self.treewidget.indexOfTopLevelItem(item))
-                except Exception as e:
-                    QtWidgets.QMessageBox.warning(self, "Error", f"Could not delete snapshot:\n{e}")
-        else:
-            confirm = QtWidgets.QMessageBox.question(
-                self, "Clear All Snapshots",
-                f"No file selected.\nDo you want to delete ALL snapshots for '{project_name}'?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-            )
-            if confirm == QtWidgets.QMessageBox.Yes:
-                deleted = 0
-                for filename in os.listdir(snapshot_dir):
-                    path = os.path.join(snapshot_dir, filename)
-                    try:
-                        os.remove(path)
-                        deleted += 1
-                    except Exception as e:
-                        print(f"Error deleting {filename}: {e}")
-                self.treewidget.clear()
-                QtWidgets.QMessageBox.information(self, "Deleted", f"{deleted} snapshots deleted.")
+        try:
+            sid, count = self.store.create(name, path, label="Quick Backup")
+        except Exception as exc:
+            Dialogs.warning(self, "Backup Failed", str(exc))
+            return
+        self.reload()
+        Dialogs.information(
+            self, "Quick Backup",
+            "%d file(s) backed up for “%s”." % (count, name))
 
     def restore_snapshots(self):
-        selected_items = self.treewidget.selectedItems()
-
-        project_name = self.current_project["ProjectName"]
-        if not project_name:
-            return
-        snapshot_dir = os.path.join(self.user_home, ".esim", "history", project_name)
-
-        if not os.path.exists(snapshot_dir):
-            QtWidgets.QMessageBox.warning(self, "No Snapshots", "No snapshots found for this project.")
+        """Restore the whole selected snapshot, or only its ticked files."""
+        checked = self._checked_files()
+        if len(checked) > 1:
+            Dialogs.warning(
+                self, "Multiple Snapshots",
+                "Tick files from a single snapshot at a time.")
             return
 
-        if selected_items:
-            item = selected_items[0]
-            file_name = item.text(0)  
-            timestamp = item.text(1)  
-
-            snapshot_filename = f"{file_name}({timestamp})"
-            snapshot_path = os.path.join(snapshot_dir, snapshot_filename)
-            destination_path = os.path.join(self.current_project_path["ProjectPath"], file_name)
-
-            confirm = QtWidgets.QMessageBox.question(
-                self, "Confirm Restore",
-                f"Do you want to restore this snapshot?\n\n{file_name}",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-            )
-
-            if confirm == QtWidgets.QMessageBox.Yes:
-                try:
-                    if os.path.exists(destination_path):
-                        os.remove(destination_path)
-                    shutil.copy2(snapshot_path, destination_path)
-                    if os.path.exists(snapshot_path):
-                        os.remove(snapshot_path)
-                    self.treewidget.takeTopLevelItem(self.treewidget.indexOfTopLevelItem(item))
-                    QtWidgets.QMessageBox.information(self, "Restored", f"{file_name} has been restored.")
-                except Exception as e:
-                    QtWidgets.QMessageBox.warning(self, "Error", f"Could not restore:\n{e}")
-
+        if checked:
+            (project, sid), files = next(iter(checked.items()))
+            summary = "%d ticked file(s)" % len(files)
         else:
-            confirm = QtWidgets.QMessageBox.question(
-                self, "Restore All Snapshots",
-                "No file selected.\nDo you want to restore ALL snapshot files?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-            )
-            if confirm == QtWidgets.QMessageBox.Yes:
-                restored = 0
-                for filename in os.listdir(snapshot_dir):
-                    match = re.match(r"(.+)\((\d{1,2}\.\d{2} [APM]{2} \d{2}-\d{2}-\d{4})\)$", filename)
-                    if match:
-                        file_base = match.group(1)
-                        snapshot_path = os.path.join(snapshot_dir, filename)
-                        destination_path = os.path.join(self.current_project_path["ProjectPath"], file_base)
+            info = self._item_info(self.treewidget.currentItem())
+            if not info or info["kind"] == "project":
+                Dialogs.warning(
+                    self, "Nothing Selected",
+                    "Select a snapshot, or tick files to restore.")
+                return
+            project, sid = info["project"], info["sid"]
+            if info["kind"] == "file":
+                files = [info["name"]]
+                summary = info["name"]
+            else:
+                files = None  # whole snapshot
+                summary = "the entire snapshot"
 
-                        try:
-                            if os.path.exists(destination_path):
-                                os.remove(destination_path)
-                            shutil.copy2(snapshot_path, destination_path)
-                            if os.path.exists(snapshot_path):
-                                os.remove(snapshot_path)
-                            restored += 1
-                        except Exception as e:
-                            print(f"Could not restore {file_base}: {e}")
+        if Dialogs.question(
+                self, "Confirm Restore",
+                "Restore %s into “%s”?\n\n"
+                "Your current files are saved as a “Before restore” "
+                "snapshot first." % (summary, project)) != Dialogs.Button.Yes:
+            return
 
-                self.treewidget.clear()
+        try:
+            restored = self.store.restore(project, sid, files=files)
+        except FileNotFoundError:
+            Dialogs.warning(
+                self, "Project Folder Missing",
+                "Could not find this project's folder on disk.\n"
+                "Open the project once so eSim knows where to restore it.")
+            return
+        except Exception as exc:
+            Dialogs.warning(self, "Restore Failed", str(exc))
+            return
 
-                QtWidgets.QMessageBox.information(self, "Restored", f"{restored} snapshot(s) restored.")
+        self.reload()
+        Dialogs.information(
+            self, "Restored", "%d file(s) restored." % len(restored))
+
+    def clear_snapshots(self):
+        """Delete the selected snapshot, or a project's whole history."""
+        info = self._item_info(self.treewidget.currentItem())
+        if not info:
+            Dialogs.warning(
+                self, "Nothing Selected",
+                "Select a snapshot or a project to delete.")
+            return
+
+        if info["kind"] == "project":
+            project = info["project"]
+            if Dialogs.question(
+                    self, "Delete All Snapshots",
+                    "Delete ALL snapshots for “%s”?\n"
+                    "This cannot be undone." % project) != Dialogs.Button.Yes:
+                return
+            self.store.delete_project(project)
+        else:
+            project, sid = info["project"], info["sid"]
+            if Dialogs.question(
+                    self, "Delete Snapshot",
+                    "Delete this snapshot?\nThis cannot be undone."
+                    ) != Dialogs.Button.Yes:
+                return
+            self.store.delete_snapshot(project, sid)
+
+        self.reload()
+
+    # ------------------------------------------------------------ interaction
+    def _on_double_click(self, item, _column):
+        info = self._item_info(item)
+        if info and info["kind"] in ("snapshot", "file"):
+            self.restore_snapshots()
+
+    def _open_menu(self, position):
+        item = self.treewidget.itemAt(position)
+        info = self._item_info(item)
+        if not info:
+            return
+        # Align selection with the clicked node so the action handlers (which
+        # read currentItem) act on what was right-clicked.
+        self.treewidget.setCurrentItem(item)
+        menu = QtWidgets.QMenu()
+
+        if info["kind"] == "project":
+            active_name, _ = self._active()
+            backup = menu.addAction("Back up now")
+            backup.setEnabled(info["project"] == active_name)
+            if info["project"] != active_name:
+                backup.setToolTip("Open this project to back it up")
+            backup.triggered.connect(self.quick_backup)
+            menu.addSeparator()
+            menu.addAction(
+                "Delete all snapshots", self.clear_snapshots)
+        elif info["kind"] == "snapshot":
+            menu.addAction("Restore this snapshot", self.restore_snapshots)
+            menu.addAction("Delete snapshot", self.clear_snapshots)
+        else:  # file
+            menu.addAction("Restore this file", self.restore_snapshots)
+
+        menu.exec(self.treewidget.viewport().mapToGlobal(position))

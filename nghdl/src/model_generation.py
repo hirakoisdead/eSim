@@ -2,20 +2,45 @@ import re
 import os
 from configparser import ConfigParser
 
+# Both limits live in nghdl/src/ghdlserver/ghdlserver.h and ghdlserver.c and
+# belong to the VHDL-side server this generated model talks to:
+#   SERVER_RECV_CAP  - receive_buffer[MAX_BUF_SIZE]; one recv() per event, so a
+#                      client message longer than this is truncated.
+#   SERVER_REPLY_CAP - Data_Send builds its reply in calloc(1, 2048).
+# The generator refuses a model whose framing would exceed either, because both
+# failure modes are silent: a truncated message is parsed as a short one and the
+# co-simulation quietly computes with wrong bits.
+SERVER_RECV_CAP = 4096
+SERVER_REPLY_CAP = 2048
+
 
 class ModelGeneration:
 
-    def __init__(self, file):
+    def __init__(self, file, outdir=None):
 
         # Script starts from here
         print("Arguement is : ", file)
+        # Every generated file lands in outdir. It used to be the CWD -- eSim's
+        # launch directory -- so a read-only CWD (packaged launcher, "/" on some
+        # setups) failed on the very first write below, and importing this
+        # module's class had a file-writing side effect that made it untestable.
+        # The caller passes a tempfile.mkdtemp(); the default keeps the old
+        # behaviour for any direct user of this class.
+        self.outdir = os.path.abspath(outdir) if outdir else os.getcwd()
+        os.makedirs(self.outdir, exist_ok=True)
         self.fname = os.path.basename(file)
+        # ONE canonical model stem. os.path.splitext strips only the final
+        # extension ("adder.v1.vhdl" -> "adder.v1"), where the old
+        # split('.')[0] read "adder" and desynced the model dir, cfunc, ifspec,
+        # testbench and modpath entry from one another.
+        self.model_stem = os.path.splitext(self.fname)[0]
         print("VHDL filename is : ", self.fname)
 
-        if os.name == 'nt':
-            self.home = os.path.join('library', 'config')
-        else:
-            self.home = os.path.expanduser('~')
+        # Per-user config lives at ~/.nghdl/config.ini on EVERY platform (the
+        # Windows bootstrap writes it there too). The old nt branch read a
+        # CWD-relative 'library/config/.nghdl/config.ini', which only worked
+        # when eSim happened to be launched from its install root.
+        self.home = os.path.expanduser('~')
 
         self.parser = ConfigParser()
         self.parser.read(os.path.join(
@@ -97,7 +122,7 @@ class ModelGeneration:
         print("Port Info :", port_info)
 
         # Open connection_info.txt file
-        con_ifo = open('connection_info.txt', 'w')
+        con_ifo = open(self._out('connection_info.txt'), 'w')
 
         for item in port_info:
             word = item.split(':')
@@ -106,6 +131,83 @@ class ModelGeneration:
             )
             con_ifo.write("\n")
         con_ifo.close()
+
+    def _out(self, name):
+        """Absolute path of a generated file inside this run's output dir."""
+        return os.path.join(self.outdir, name)
+
+    @staticmethod
+    def _port_width(item):
+        """Bit width of a "name:bits" port entry, at least 1. Never 0: the
+        generated C sizes an array from it and every loop would then run out of
+        bounds."""
+        try:
+            return max(1, int(str(item).split(':')[1]))
+        except (IndexError, ValueError):
+            return 1
+
+    def _message_sizes(self):
+        """Exact byte sizes of the two co-simulation messages.
+
+        Client -> server is ``name:<bits>`` per input joined with ``,``; server
+        -> client is ``name:<bits>;`` per output (see ghdlserver.c Data_Send).
+        Both are returned INCLUDING the terminating NUL, so they can be used
+        verbatim as C array sizes. Raises ValueError when either exceeds what
+        the server can carry -- the old fixed 1024-byte buffers truncated the
+        message instead, and a half-parsed message is wrong data, not an error.
+        """
+        send = 1
+        for i, item in enumerate(self.input_port):
+            if i:
+                send += 1                       # the ',' separator
+            send += len(item.split(':')[0]) + 1 + self._port_width(item)
+
+        recv = 1
+        for item in self.output_port:
+            # name + ':' + bits + ';'
+            recv += len(item.split(':')[0]) + 2 + self._port_width(item)
+
+        if send > SERVER_RECV_CAP:
+            raise ValueError(
+                "This model's input ports need a " + str(send) + "-byte "
+                "message, but the VHDL testbench server can only receive " +
+                str(SERVER_RECV_CAP) + " bytes at once. Split the model or "
+                "narrow its input ports and rebuild.")
+        if recv - 1 > SERVER_REPLY_CAP:
+            raise ValueError(
+                "This model's output ports need a " + str(recv - 1) + "-byte "
+                "reply, but the VHDL testbench server can only build " +
+                str(SERVER_REPLY_CAP) + " bytes. Split the model or narrow its "
+                "output ports and rebuild.")
+        return send, recv
+
+    def _start_server_command(self, windows):
+        """The C string literal INIT passes to system() to start this model's
+        VHDL testbench server (the returned text closes the literal it opens).
+
+        BOTH branches now derive the path from config.ini's DIGITAL_MODEL. The
+        POSIX branch used to bake "$HOME/nghdl-simulator/src/xspice/icm/ghdl":
+        byte-identical to the default install, but wrong for anyone who
+        relocated the nghdl tree -- INIT then launched a script that does not
+        exist and the simulation hung forever at "Client-Initialising GHDL...".
+        Split out of createCfuncModFile so both branches stay unit-testable on
+        either OS (patching os.name globally is not an option: it makes pathlib
+        build POSIX paths on Windows and breaks pytest itself).
+        """
+        root = self.parser.get('NGHDL', 'DIGITAL_MODEL')
+        self.digital_home = os.path.join(root, "ghdl")
+        if windows:
+            dut = os.path.normpath(
+                '"' + self.digital_home + "/" + self.model_stem + "/DUTghdl/"
+            ).replace("\\", "/")
+            return ('start mintty.exe -t \\"VHDL-Testbench Logs\\" -h always '
+                    'bash.exe -c \\' + dut +
+                    '/start_server.sh %d %s & read\\""')
+        # Forward slashes are built by hand: this string is baked into C source
+        # for a POSIX target, so it must not pick up a host separator.
+        dut = (root.replace("\\", "/").rstrip("/") + "/ghdl/" +
+               self.model_stem + "/DUTghdl")
+        return dut + '/start_server.sh %d %s &"'
 
     def readPortInfo(self):
 
@@ -116,28 +218,27 @@ class ModelGeneration:
         output_list = []
 
         # Reading connection_info.txt file for port infomation
-        read_file = open('connection_info.txt', 'r')
+        read_file = open(self._out('connection_info.txt'), 'r')
         data = read_file.readlines()
         read_file.close()
 
         # Extracting input and output port list from data
         print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
         for line in data:
-            print(line)
-            if re.match(r'^\s*$', line):
-                pass
-            else:
-                in_items = re.findall(
-                    "IN", line, re.MULTILINE | re.IGNORECASE
-                )
-                out_items = re.findall(
-                    "OUT", line, re.MULTILINE | re.IGNORECASE
-                )
-
-                if in_items:
-                    input_list.append(line.split())
-                if out_items:
-                    output_list.append(line.split())
+            # connection_info.txt lines are "name direction bits" with the VHDL
+            # direction in / out / inout. Classify on the direction FIELD: the
+            # old re.findall("IN"/"OUT", line) matched the port NAME too, so a
+            # port such as "sout out 1" or "win out 1" (name contains "in"/"out")
+            # landed in both lists, and an "inout" matched both. Skip lines with
+            # < 3 fields (blank/malformed).
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            direction = parts[1].lower()
+            if direction in ("in", "inout"):
+                input_list.append(parts)
+            elif direction == "out":
+                output_list.append(parts)
 
         print("Input List :", input_list)
         print("Output list :", output_list)
@@ -159,7 +260,11 @@ class ModelGeneration:
         # ############## Creating content for cfunc.mod file ############## #
 
         print("Starting With cfunc.mod file")
-        cfunc = open('cfunc.mod', 'w')
+        # Sizes first: a model whose framing cannot fit through the server is
+        # refused BEFORE any file is written, so a failed generation leaves no
+        # half-built model behind.
+        send_size, recv_size = self._message_sizes()
+        cfunc = open(self._out('cfunc.mod'), 'w')
         print("Building content for cfunc.mod file")
 
         comment = '''/* This is cfunc.mod file auto generated by \
@@ -191,7 +296,7 @@ class ModelGeneration:
             '''
 
         function_open = (
-            '''void cm_''' + self.fname.split('.')[0] + '''(ARGS) \n{''')
+            '''void cm_''' + self.model_stem + '''(ARGS) \n{''')
 
         digital_state_output = []
         for item in self.output_port:
@@ -200,13 +305,18 @@ class ModelGeneration:
                 ", *_op_" + item.split(':')[0] + "_old;"
             )
 
+        # send_data/recv_data are sized from the ACTUAL port framing (see
+        # _message_sizes) instead of a blanket 1024. With ~15 32-bit ports the
+        # old buffer overflowed: snprintf truncated the message, the server
+        # parsed the fragment, and the co-simulation ran on wrong bits with no
+        # error anywhere.
         var_section = '''
             // Declaring components of Client
             FILE *log_client = NULL;
             log_client=fopen("client.log","a");
             int bytes_recieved;
-            char send_data[1024];
-            char recv_data[1024];
+            char send_data[''' + str(send_size) + '''];
+            char recv_data[''' + str(recv_size) + '''];
             char *key_iter;
             struct hostent *host;
             struct sockaddr_in server_addr;
@@ -220,8 +330,10 @@ class ModelGeneration:
 
         temp_input_var = []
         for item in self.input_port:
+            # width bits + the '\0' the assignment loop writes at [PORT_SIZE].
             temp_input_var.append(
-                "char temp_" + item.split(':')[0] + "[1024];"
+                "char temp_" + item.split(':')[0] +
+                "[" + str(self._port_width(item) + 1) + "];"
             )
 
         # Start of INIT function
@@ -262,30 +374,38 @@ class ModelGeneration:
 
             cm_count_ptr = cm_count_ptr + 1
 
+        # Everything here is *tracing*, and every line of it is already written
+        # to client.log by the fprintf below. Printing it to stdout as well put
+        # a per-iteration wall of "Client-..." chatter into the eSim console and
+        # buried the real simulator output. Trace goes to the log file only.
+        # (The old `printf(ctime(&systime))` also passed a non-literal as the
+        # format string -- undefined behaviour if the locale's date ever
+        # contains a '%'. It is gone with the rest.)
         systime_info = '''
                 /*Taking system time info for log */
                 time_t systime;
                 systime = time(NULL);
-                printf(ctime(&systime));
-                printf("Client-Initialising GHDL...\\n\\n");
                 fprintf(log_client,"Setup Client Server Connection at %s \\n"''' \
                 ''',ctime(&systime));
         '''
 
+        # cm_event_get_ptr(tag, timepoint): the arguments are ORTHOGONAL. `tag`
+        # picks the block cm_event_alloc'd for this port; `timepoint` says how
+        # far BACK in the rotating state history to look -- 0 current, 1
+        # previous (ngspice cm/cmevt.c; every stock code model uses
+        # (tag,0)/(tag,1) for every tag). The old loop carried a second counter
+        # that tracked the tag index instead of resetting, so every port after
+        # the first read and wrote the wrong timestep's block and froze after
+        # its first transition. Same fix as the Verilog generator in
+        # src/maker/ModelGeneration.py -- keep the two in step.
         els_evt_ptr = []
-        els_evt_count1 = 0
-        els_evt_count2 = 0
-        for item in self.output_port:
+        for tag, item in enumerate(self.output_port):
             els_evt_ptr.append("_op_" + item.split(":")[0] +
                                " = (Digital_State_t *) cm_event_get_ptr(" +
-                               str(els_evt_count1) + "," +
-                               str(els_evt_count2) + ");")
-            els_evt_count2 = els_evt_count2 + 1
+                               str(tag) + ",0);")
             els_evt_ptr.append("_op_" + item.split(":")[0] + "_old" +
                                " = (Digital_State_t *) cm_event_get_ptr(" +
-                               str(els_evt_count1) + "," +
-                               str(els_evt_count2) + ");")
-            els_evt_count1 = els_evt_count1 + 1
+                               str(tag) + ",1);")
 
         client_setup_ip = '''
                 /* Client Setup IP Addr */
@@ -367,7 +487,6 @@ class ModelGeneration:
                 exit(1);
             }
 
-            printf("Client-Socket (Id : %d) created\\n", socket_fd);
             fprintf(log_client,"Client-Client Socket created ''' \
             '''successfully \\n");
             fprintf(log_client,"Client- Socket Id : %d \\n",socket_fd);
@@ -376,7 +495,8 @@ class ModelGeneration:
             server_addr.sin_family = AF_INET;
             server_addr.sin_port = htons(sock_port);
             server_addr.sin_addr = *((struct in_addr *)host->h_addr);
-            bzero(&(server_addr.sin_zero),8);
+            /* memset, not bzero: MinGW (Windows) has no bzero */
+            memset(&(server_addr.sin_zero), 0, 8);
 
         '''
 
@@ -403,7 +523,6 @@ class ModelGeneration:
                 }
                 else
                 {
-                    printf("Client-Connected to server \\n");
                     fprintf(log_client,"Client-Connected to server \\n");
                     break;
                 }
@@ -467,7 +586,6 @@ class ModelGeneration:
             }
             else
             {
-                printf("Client-Message sent: %s \\n",send_data);
                 fprintf(log_client,"Socket Id : %d & Message sent : %s \\n"''' \
                 ''',socket_fd,send_data);
             }
@@ -476,7 +594,9 @@ class ModelGeneration:
 
         recv_data = '''
 
-            bytes_recieved=recv(socket_fd,recv_data,sizeof(recv_data),0);
+            /* sizeof-1: the NUL below is written AT bytes_recieved, so a
+               completely full buffer would put it one past the end. */
+            bytes_recieved=recv(socket_fd,recv_data,sizeof(recv_data)-1,0);
             if ( bytes_recieved <= 0 )
             {
                 perror("Client-Either Connection Closed or Error ");
@@ -484,7 +604,6 @@ class ModelGeneration:
             }
             recv_data[bytes_recieved] = '\\0';
 
-            printf("Client-Message Received -  %s\\n\\n",recv_data);
             fprintf(log_client,"Message Received From Server-''' \
             '''%s\\n",recv_data);
 
@@ -561,31 +680,13 @@ class ModelGeneration:
         cfunc.write("\n")
         cfunc.write(client_setup_ip)
         cfunc.write("\n")
-        cfunc.write("\t\tchar command[1024];\n")
-
-        if os.name == 'nt':
-            self.digital_home = self.parser.get('NGHDL', 'DIGITAL_MODEL')
-            self.digital_home = os.path.join(self.digital_home, "ghdl")
-
-            cmd_str2 = "/start_server.sh %d %s & read" + "\\" + "\"" + "\""
-            cmd_str1 = os.path.normpath(
-                "\"" + self.digital_home + "/" +
-                self.fname.split('.')[0] + "/DUTghdl/"
-            )
-            cmd_str1 = cmd_str1.replace("\\", "/")
-
-            cfunc.write(
-                '\t\tsnprintf(command,1024, "start mintty.exe -t ' +
-                '\\"VHDL-Testbench Logs\\" -h always bash.exe -c ' +
-                '\\' + cmd_str1 + cmd_str2 + ', sock_port, my_ip);'
-            )
-        else:
-            cfunc.write(
-                '\t\tsnprintf(command,1024,"' + self.home +
-                '/nghdl-simulator/src/xspice/icm/ghdl/' +
-                self.fname.split('.')[0] +
-                '/DUTghdl/start_server.sh %d %s &", sock_port, my_ip);'
-            )
+        launch = self._start_server_command(os.name == 'nt')
+        # Size the buffer from the command that is actually emitted (+64 for
+        # the %d port and the %s loopback IP) instead of a fixed 1024, which a
+        # long install path silently truncated into an unrunnable command.
+        cfunc.write("\t\tchar command[" + str(len(launch) + 64) + "];\n")
+        cfunc.write('\t\tsnprintf(command,sizeof(command), "' + launch +
+                    ', sock_port, my_ip);')
 
         cfunc.write('\n\t\tsystem(command);')
         cfunc.write("\n\t}")
@@ -635,7 +736,7 @@ class ModelGeneration:
         # ################### Creating ifspec.ifs file #################### #
 
         print("Starting with ifspec.ifs file")
-        ifspec = open('ifspec.ifs', 'w')
+        ifspec = open(self._out('ifspec.ifs'), 'w')
 
         print("Gathering Al the content for ifspec file")
 
@@ -646,8 +747,8 @@ class ModelGeneration:
         '''
 
         name_table = 'NAME_TABLE:\n\
-        C_Function_Name: cm_' + self.fname.split('.')[0] + '\n\
-        Spice_Model_Name: ' + self.fname.split('.')[0] + '\n\
+        C_Function_Name: cm_' + self.model_stem + '\n\
+        Spice_Model_Name: ' + self.model_stem + '\n\
         Description: "Model generated from ghdl code ' + self.fname + '" \n'
 
         # Input and Output Port Table
@@ -693,8 +794,12 @@ class ModelGeneration:
             )
             null_allowed = 'Null_Allowed:\tno\n'
 
-            # Insert detail in the list
-            in_port_table.append(
+            # Insert detail in the list. This is the OUTPUT loop, so it must
+            # feed out_port_table: it used to append to in_port_table and the
+            # "for item in out_port_table" writer below was dead. The file came
+            # out right purely because one list preserved the order -- any edit
+            # touching only out_port_table silently did nothing.
+            out_port_table.append(
                 port_table + port_name + description +
                 direction + default_type + allowed_type +
                 vector + vector_bounds + null_allowed
@@ -757,8 +862,8 @@ class ModelGeneration:
 
         print("Starting with testbench file")
 
-        testbench = open(self.fname.split('.')[0] + '_tb.vhdl', 'w')
-        print(self.fname.split('.')[0] + '_tb.vhdl')
+        testbench = open(self._out(self.model_stem + '_tb.vhdl'), 'w')
+        print(self.model_stem + '_tb.vhdl')
 
         # comment
         comment_vhdl = "------------------------------------------------------"
@@ -782,15 +887,15 @@ class ModelGeneration:
 
         '''
 
-        tb_entity = ("entity " + self.fname.split('.')[0] +
+        tb_entity = ("entity " + self.model_stem +
                      "_tb is\nend entity;\n\n")
 
-        arch = ("architecture " + self.fname.split('.')[0] + "_tb_beh of " +
-                self.fname.split('.')[0] + "_tb is\n")
+        arch = ("architecture " + self.model_stem + "_tb_beh of " +
+                self.model_stem + "_tb is\n")
 
         # Adding components
         components = []
-        components.append("\tcomponent " + self.fname.split('.')[0] +
+        components.append("\tcomponent " + self.model_stem +
                           " is\n\t\tport(\n\t\t\t\t")
 
         port_vector_count = 0
@@ -908,7 +1013,7 @@ class ModelGeneration:
 
         # Adding mapping part
         map = []
-        map.append("\tu1 : " + self.fname.split('.')[0] + " port map(\n")
+        map.append("\tu1 : " + self.model_stem + " port map(\n")
 
         for item in self.input_port:
             map.append("\t\t\t\t" + item.split(':')[0] +
@@ -1063,7 +1168,7 @@ class ModelGeneration:
         self.digital_home = self.parser.get('NGHDL', 'DIGITAL_MODEL')
         self.digital_home = os.path.join(self.digital_home, "ghdl")
 
-        start_server = open('start_server.sh', 'w')
+        start_server = open(self._out('start_server.sh'), 'w')
 
         start_server.write("#!/bin/bash\n\n")
         start_server.write(
@@ -1072,13 +1177,19 @@ class ModelGeneration:
         )
 
         if os.name == 'nt':
+            # The script is spawned by the ghdl code model via
+            # `start mintty ... bash.exe -c ...` (a NON-login bash), so the
+            # MSYS2 mingw64 toolchain is not on PATH -- put it there before
+            # anything calls ghdl/gcc.
+            start_server.write(
+                "export PATH=/mingw64/bin:/usr/bin:$PATH\n")
             pathstr = self.digital_home + "/" + \
-                self.fname.split('.')[0] + "/DUTghdl/"
+                self.model_stem + "/DUTghdl/"
             pathstr = pathstr.replace("\\", "/")
             start_server.write("cd " + pathstr + "\n")
         else:
             start_server.write("cd " + self.digital_home +
-                               "/" + self.fname.split('.')[0] + "/DUTghdl/\n")
+                               "/" + self.model_stem + "/DUTghdl/\n")
 
         start_server.write("chmod 775 sock_pkg_create.sh &&\n")
         start_server.write("./sock_pkg_create.sh $1 $2 &&\n")
@@ -1095,18 +1206,21 @@ class ModelGeneration:
         #=============================================
         start_server.write("ghdl -a " + self.fname + " &&\n")
         start_server.write(
-            "ghdl -a " + self.fname.split('.')[0] + "_tb.vhdl  &&\n"
+            "ghdl -a " + self.model_stem + "_tb.vhdl  &&\n"
         )
 
         if os.name == 'nt':
+            # -lws2_32: let the mingw linker resolve Winsock from its own
+            # library path. The old form linked a checked-in libws2_32.a copy
+            # that no longer ships (and would be toolchain-mismatched anyway).
             start_server.write("ghdl -e -Wl,ghdlserver.o " +
-                               "-Wl,libws2_32.a " +
-                               self.fname.split('.')[0] + "_tb &&\n")
-            start_server.write("./" + self.fname.split('.')[0] + "_tb.exe")
+                               "-Wl,-lws2_32 " +
+                               self.model_stem + "_tb &&\n")
+            start_server.write("./" + self.model_stem + "_tb.exe")
         else:
-            start_server.write("ghdl -e -Wl,ghdlserver.o " + self.fname.split('.')[0] + "_tb &&\n")
-            start_server.write("./" + self.fname.split('.')[0] + "_tb --vcd=" + self.fname.split('.')[0] + "_tb.vcd\n")
-            start_server.write( "gtkwave " + self.fname.split('.')[0] + "_tb.vcd 2>/dev/null")
+            start_server.write("ghdl -e -Wl,ghdlserver.o " + self.model_stem + "_tb &&\n")
+            start_server.write("./" + self.model_stem + "_tb --vcd=" + self.model_stem + "_tb.vcd\n")
+            start_server.write( "gtkwave " + self.model_stem + "_tb.vcd 2>/dev/null")
 
         start_server.close()
 
@@ -1114,7 +1228,7 @@ class ModelGeneration:
 
         # ########### Creating and writing in sock_pkg_create.sh ########### #
 
-        sock_pkg_create = open('sock_pkg_create.sh', 'w')
+        sock_pkg_create = open(self._out('sock_pkg_create.sh'), 'w')
 
         sock_pkg_create.write("#!/bin/bash\n\n")
         sock_pkg_create.write(

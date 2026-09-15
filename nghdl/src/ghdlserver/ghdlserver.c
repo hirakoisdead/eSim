@@ -82,8 +82,8 @@ static int pid_file_created; // 10.Mar.2017 - RM
 void Vhpi_Exit(int sig);
 
 struct my_struct {
-    char val[1024];                  
-    char key[1024];       
+    char val[VHPI_MAX_STRING_LENGTH];
+    char key[VHPI_MAX_STRING_LENGTH];
     UT_hash_handle hh;    //Makes this structure hashable.
 };
 
@@ -204,11 +204,44 @@ static int create_server(int port_number, char my_ip[], int max_connections)
 
 	memset(&serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	// serv_addr.sin_addr.s_addr = inet_addr(my_ip); // 26.Sept.2019 - RP - Bind to specific IP only
 	serv_addr.sin_port = htons(port_number);
 
-	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
+	/* Bind to the loopback address the client dials, never INADDR_ANY.
+	 * The generated code model hands us my_ip = "127.0.0.<n>" and connects
+	 * to exactly that, so the wildcard bind only ever added exposure: every
+	 * co-simulation put a testbench server on port 5000+instance_id on every
+	 * interface (any LAN host could talk to it), and on Windows it raised the
+	 * firewall consent dialog on the first simulation - cancelling which
+	 * breaks the run in a way nobody connects back to the popup.
+	 * Anything that is not a 127.0.0.0/8 address is refused here and replaced
+	 * by 127.0.0.1: the client is always local by construction.
+	 */
+	unsigned long bind_ip = (my_ip != NULL && my_ip[0] != '\0')
+	                        ? (unsigned long) inet_addr(my_ip)
+	                        : (unsigned long) INADDR_NONE;
+
+	if (bind_ip == (unsigned long) INADDR_NONE || (ntohl(bind_ip) >> 24) != 127)
+	{
+		bind_ip = (unsigned long) htonl(INADDR_LOOPBACK);
+	}
+
+	serv_addr.sin_addr.s_addr = bind_ip;
+
+	int bound = (bind(sockfd, (struct sockaddr *) &serv_addr,
+	                  sizeof(serv_addr)) == 0);
+
+	/* A Windows loopback interface may carry only 127.0.0.1, in which case
+	 * binding a 127.0.0.<n> alias fails with WSAEADDRNOTAVAIL. Retry on
+	 * 127.0.0.1 - still loopback, never the wildcard.
+	 */
+	if (!bound && serv_addr.sin_addr.s_addr != htonl(INADDR_LOOPBACK))
+	{
+		serv_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		bound = (bind(sockfd, (struct sockaddr *) &serv_addr,
+		              sizeof(serv_addr)) == 0);
+	}
+
+	if (!bound)
 	{
         #ifdef __linux__
 		    fprintf(stderr, "%s- Error: could not bind socket to port %d\n", __progname, port_number);
@@ -450,8 +483,12 @@ void Vhpi_Initialize(int sock_port, char sock_ip[])
 void Vhpi_Set_Port_Value(char *port_name, char *port_value, int port_width)
 {
 	s = (struct my_struct *) malloc(sizeof(struct my_struct));
-	strncpy(s->key, port_name, 64);
-	strncpy(s->val, port_value, 64);
+	// snprintf, not strncpy: strncpy leaves the destination unterminated when
+	// the source fills it, and both fields are read back as C strings (uthash
+	// hashes key with strlen). The 64 these were bounded by was well under the
+	// 1024 a VhpiString can carry, silently clipping wide ports.
+	snprintf(s->key, sizeof(s->key), "%s", port_name);
+	snprintf(s->val, sizeof(s->val), "%s", port_value);
 	HASH_ADD_STR(users, key, s);
 }
 
@@ -461,7 +498,11 @@ void Vhpi_Get_Port_Value(char *port_name, char *port_value, int port_width)
 	HASH_FIND_STR(users, port_name, s);
 	if (s)
 	{
-		snprintf(port_value, sizeof(port_value), "%s", s->val);
+		// port_value is a pointer, so sizeof(port_value) was 8 -- every value
+		// handed back to the testbench got clipped to 7 chars + NUL. Values are
+		// one character per bit, so every port at least 8 bits wide came back
+		// corrupt. Bound by the VhpiString the testbench actually passes.
+		snprintf(port_value, VHPI_MAX_STRING_LENGTH, "%s", s->val);
 		HASH_DEL(users, s);
 		free(s);
 		s = NULL;
