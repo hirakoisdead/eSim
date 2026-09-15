@@ -1,0 +1,32 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Logs and outputs
+logs/*.log
+!logs/.gitkeep
+
+# IDEs and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# User specific configuration overrides
+.esimmate/
