@@ -1,228 +1,220 @@
 from PyQt6 import QtWidgets, QtCore
+from configuration import paths
+from configuration import Dialogs
 from . import TrackWidget
+from . import ModelGrouping
+from .ModelGroupWidget import (ModelGroupWidget, InstanceRow,
+                               finish_group_layout)
 from projManagement import Validation
+from projManagement import modelCache
+from projManagement.projectPaths import stem_from_file, previous_values_path
 import os
 from xml.etree import ElementTree as ET
 
 
 class SubcircuitTab(QtWidgets.QWidget):
     """
-    - This class creates Subcircuit Tab in KicadtoNgspice Window
-    - It dynamically creates the widget for subcircuits,
-      according to the .cir file
-    - Creates `lineEdit` and `Add` button, which triggers `fileSelector`
-    - Also, checks `Previous_value.xml` for previous subcircuit value
-      to autofill, the `lineEdit`
-    - Add button is bind to `trackSubcircuit`
-    - Also `trackSubcircuit` without button is triggered if `lineEdit` filled
+    Subcircuit tab of the KicadtoNgspice window.
+
+    Subcircuit instances that reference the same subcircuit (e.g. several
+    ``lm_741`` op-amps) are grouped into a single ModelGroupWidget: the user
+    selects the subcircuit directory once and it fans out to every instance,
+    with per-instance override still available. A directory is validated against
+    each instance's port count before it is accepted.
+
+    The per-instance QLineEdits stay registered in ``entry_var`` /
+    ``subcircuit_dict_beg`` / ``subcircuit_dict_end`` with one field per
+    instance, so the Convert step, the callConvert Previous_Values writer and
+    tab reload are unchanged; grouping is a view/controller layer over the
+    existing per-ref ``subcircuitTrack`` storage.
     """
 
-    def __init__(self, schematicInfo, clarg1):
+    def __init__(self, schematicInfo, clarg1, track=None):
         kicadFile = clarg1
-        (projpath, filename) = os.path.split(kicadFile)
-        project_name = os.path.basename(projpath)
+        # Stem of the .cir handed in -- the key prefix for subcircuitList.
+        project_name = stem_from_file(kicadFile)
 
+        self.root = []
         try:
-            f = open(
-                os.path.join(
-                    projpath,
-                    project_name +
-                    "_Previous_Values.xml"),
-                'r')
+            f = open(previous_values_path(kicadFile), 'r')
             tree = ET.parse(f)
-            parent_root = tree.getroot()
-            for child in parent_root:
+            for child in tree.getroot():
                 if child.tag == "subcircuit":
-                    root = child
-        except BaseException:
+                    self.root = child
+        except Exception:
             print("Subcircuit Previous values XML is Empty")
 
         QtWidgets.QWidget.__init__(self)
 
-        # Creating track widget object
-        self.obj_trac = TrackWidget.TrackWidget()
-
-        # Creating validation object
+        # Shared per-conversion data bus, injected by the converter window; a
+        # standalone construction falls back to its own instance.
+        self.obj_trac = track if track is not None else \
+            TrackWidget.TrackWidget()
         self.obj_validation = Validation.Validation()
-        # Row and column count
-        self.row = 0
-        self.count = 1  # Entry count
+
+        self.count = 1                 # entry_var index counter
         self.entry_var = {}
         self.subcircuit_dict_beg = {}
         self.subcircuit_dict_end = {}
-        # List to hold information about subcircuit
-        self.subDetail = {}
+        self.subDetail = {}            # entry index -> ref
+        self.sub_ports = {}            # ref -> required port count
+        # (model_name, ModelGroupWidget) per group, for model_cache hints.
+        self._groups = []
 
-        # Stores the number of ports in each subcircuit
-        self.numPorts = []
-
-        # Set Layout
         self.grid = QtWidgets.QGridLayout()
+        self.grid.setContentsMargins(10, 10, 10, 10)
+        self.grid.setVerticalSpacing(8)
         self.setLayout(self.grid)
 
-        for eachline in schematicInfo:
-            words = eachline.split()
-            if eachline[0] == 'x':
-                # print("Subcircuit : Words", words[0])
-                self.obj_trac.subcircuitList[project_name + words[0]] = words
-                self.subcircuit_dict_beg[words[0]] = self.count
-                subbox = QtWidgets.QGroupBox()
-                subgrid = QtWidgets.QGridLayout()
-                subbox.setTitle("Add subcircuit for " + words[len(words) - 1])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setReadOnly(True)
-                global path_name
-                try:
-                    for child in root:
-                        if child.tag[0] == eachline[0] \
-                                and child.tag[1] == eachline[1]:
-                            # print("Subcircuit MATCHING---", child.tag[0], \
-                            #       child.tag[1], eachline[0],eachline[1])
-                            try:
-                                if child[0].text \
-                                   and os.path.exists(child[0].text):
-                                    self.entry_var[self.count] \
-                                        .setText(child[0].text)
-                                    path_name = child[0].text
-                                else:
-                                    self.entry_var[self.count].setText("")
-                            except BaseException as e:
-                                print("Error when set text of " +
-                                      "subcircuit :", str(e))
-                except BaseException as e:
-                    print("Error before subcircuit :", str(e))
+        components = ModelGrouping.parse_subcircuit_components(schematicInfo)
+        groups = ModelGrouping.group_by_model(components)
 
-                subgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                # Send the number of ports specified with the given\
-                # subcircuit for verification.
-                # eg. If the line is 'x1 4 0 3 ua741', there are 3 ports(4, 0
-                # and 3).
-                self.numPorts.append(len(words) - 2)
-                # print("Number of ports of sub circuit : ", self.numPorts)
-                self.addbtn.clicked.connect(self.trackSubcircuit)
-                subgrid.addWidget(self.addbtn, self.row, 2)
-                subbox.setLayout(subgrid)
+        for (_kind, model), instances in groups.items():
+            rows = []
+            for comp in instances:
+                ref = comp.ref
+                words = comp.words
+                beg = self.count
 
-                # CSS
-                subbox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius:\
-                 9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
+                self.subcircuit_dict_beg[ref] = beg
+                self.subDetail[beg] = ref
+                # Ports = tokens between the ref and the subcircuit name.
+                self.sub_ports[ref] = len(words) - 2
+                # Mirror the legacy registration Convert's count check reads.
+                self.obj_trac.subcircuitList[project_name + ref] = words
 
-                self.grid.addWidget(subbox)
+                edit = QtWidgets.QLineEdit()
+                self.entry_var[beg] = edit
+                self.count += 1
+                self.subcircuit_dict_end[ref] = self.count - 1
 
-                # Adding Subcircuit Details
-                self.subDetail[self.count] = words[0]
+                self._restore_subcircuit(ref, beg)
+                if edit.text():
+                    self._resolve_subcircuit(ref, edit.text())
 
-                # Increment row and widget count
+                rows.append(InstanceRow(
+                    ref, edit, browse_fn=self._make_row_browse(ref)))
 
-                if self.entry_var[self.count].text() == "":
-                    pass
-                else:
-                    self.trackSubcircuitWithoutButton(self.count, path_name)
+            title = "%s  (Subcircuit)" % model
+            group = ModelGroupWidget(
+                title, rows,
+                resolve_fn=self._resolve_subcircuit,
+                group_browse_fn=self._make_group_browse(instances))
+            self._apply_cache_hint(model, group, rows)
+            self.grid.addWidget(group)
+            self._groups.append((model, group))
 
-                self.subcircuit_dict_end[words[0]] = self.count
-                self.row = self.row + 1
-                self.count = self.count + 1
+        finish_group_layout(self.grid)
 
-            self.show()
 
-    def trackSubcircuit(self):
-        """
-        - This function is use to keep track of all Subcircuit widget
-        - Here the number of ports is tracked using the numPorts
-          and `Add` button objectName property, which is refered using `sender`
-        - Once a file is selected using the `QFileDialog` validate it
-        - Pass the path of subciruit and the number of ports
-        - According to validation state take further steps
-        - If validated correctly, add to TrackWidget
-        """
-        sending_btn = self.sender()
-        # print "Object Called is ",sending_btn.objectName()
-        self.widgetObjCount = int(sending_btn.objectName())
+    def _apply_cache_hint(self, model, group, rows):
+        """Pre-fill a blank group default from the cross-project model_cache,
+        but only a directory that exists (lookup guarantees it) AND validates
+        for every instance's port count. A project's own restored values and any
+        override always take precedence."""
+        if group.group_path() or any(group.is_overridden(r.ref) for r in rows):
+            return
+        hint = modelCache.lookup(model)
+        if not hint:
+            return
+        if all(self.obj_validation.validateSub(hint, self.sub_ports[r.ref])
+               == "True" for r in rows):
+            group.set_group_path(hint)
 
-        init_path = '../../'
-        if os.name == 'nt':
-            init_path = ''
+    def remembered_models(self):
+        """{subcircuit_name: directory} for groups where every instance
+        resolved to the same non-empty directory. Fed to modelCache after a
+        successful convert."""
+        out = {}
+        for model, group in self._groups:
+            vals = set(group.resolved().values())
+            if len(vals) == 1:
+                path = next(iter(vals))
+                if path:
+                    out[model] = path
+        return out
 
-        self.subfile = str(
-            QtCore.QDir.toNativeSeparators(
-                QtWidgets.QFileDialog.getExistingDirectory(
-                    self, "Open Subcircuit",
-                    init_path + "library/SubcircuitLibrary"
-                )
-            )
-        )
+    # -- tracking ------------------------------------------------------------
 
-        if not self.subfile:
+    def _resolve_subcircuit(self, ref, path):
+        """Write one instance's directory into subcircuitTrack -- the same
+        per-ref entry Convert reads. An empty path removes the entry, so an
+        unassigned instance fails the "all subcircuits specified" check rather
+        than emitting an empty include."""
+        track = self.obj_trac.subcircuitTrack
+        if path:
+            track[ref] = path
+        else:
+            track.pop(ref, None)
+
+    def _restore_subcircuit(self, ref, idx):
+        """Refill an instance from self.root (Previous_Values.xml), dropping a
+        directory that no longer exists on this machine (the leak guard). Match
+        is by exact ref, fixing the legacy 2-character match that confused e.g.
+        x1 with x10."""
+        for child in self.root:
+            if child.tag != ref:
+                continue
+            try:
+                text = child[0].text or ""
+            except IndexError:
+                return
+            if text and os.path.exists(text):
+                self.entry_var[idx].setText(text)
+            else:
+                self.entry_var[idx].setText("")
             return
 
-        self.reply = self.obj_validation.validateSub(
-            self.subfile, self.numPorts[self.widgetObjCount - 1]
-        )
+    # -- browse + validation -------------------------------------------------
 
-        if self.reply == "True":
-            # Setting Library to Text Edit Line
-            self.entry_var[self.widgetObjCount].setText(self.subfile)
-            self.subName = self.subDetail[self.widgetObjCount]
+    def _open_sub_dir(self):
+        """Open the subcircuit directory picker; return the path or ''."""
+        return str(QtCore.QDir.toNativeSeparators(
+            QtWidgets.QFileDialog.getExistingDirectory(
+                self, "Open Subcircuit",
+                paths.library_path("SubcircuitLibrary"))))
 
-            # Storing to track it during conversion
-            self.obj_trac.subcircuitTrack[self.subName] = self.subfile
+    def _validate(self, path, ref):
+        """True if `path` is a valid subcircuit dir with the right port count
+        for `ref`; otherwise show the matching error and return False."""
+        reply = self.obj_validation.validateSub(path, self.sub_ports[ref])
+        if reply == "True":
+            return True
+        if reply == "PORT":
+            self._error("Please select a Subcircuit with the correct number "
+                        "of ports.")
+        elif reply == "DIREC":
+            self._error("Please select a valid Subcircuit directory "
+                        "(containing a '.sub' file).")
+        elif reply == "NOSUBCKT":
+            self._error("The selected '.sub' file has no '.subckt' line "
+                        "-- it is not a valid subcircuit.")
+        return False
 
-        elif self.reply == "PORT":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
-                "Please select a Subcircuit with correct number of ports."
-            )
-            self.msg.exec()
-        elif self.reply == "DIREC":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
-                "Please select a valid Subcircuit directory "
-                "(Containing '.sub' file)."
-            )
-            self.msg.exec()
+    def _make_group_browse(self, instances):
+        """Group Browse: pick one directory and accept it only if it validates
+        for every instance in the group (same subcircuit => same ports, but
+        checked defensively)."""
+        refs = [c.ref for c in instances]
 
-    def trackSubcircuitWithoutButton(self, iter_value, path_value):
-        """
-        - Same as trackSubcircuit, but here the count value is passed directly
-          without using any button as in `Add`
-        - This is triggered only once, initally
-        """
+        def browse():
+            path = self._open_sub_dir()
+            if not path:
+                return ""
+            for ref in refs:
+                if not self._validate(path, ref):
+                    return ""
+            return path
+        return browse
 
-        self.widgetObjCount = iter_value
+    def _make_row_browse(self, ref):
+        """Per-instance Browse: pick and validate a directory for one ref."""
+        def browse():
+            path = self._open_sub_dir()
+            if not path:
+                return ""
+            return path if self._validate(path, ref) else ""
+        return browse
 
-        self.subfile = path_value
-        self.reply = self.obj_validation.validateSub(
-            self.subfile, self.numPorts[self.widgetObjCount - 1])
-        if self.reply == "True":
-            # Setting Library to Text Edit Line
-            self.entry_var[self.widgetObjCount].setText(self.subfile)
-            self.subName = self.subDetail[self.widgetObjCount]
-
-            # Storing to track it during conversion
-            self.obj_trac.subcircuitTrack[self.subName] = self.subfile
-        elif self.reply == "PORT":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
-                "Please select a Subcircuit with correct number of ports.")
-            self.msg.exec()
-        elif self.reply == "DIREC":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
-                "Please select a valid Subcircuit directory "
-                "(Containing '.sub' file).")
-            self.msg.exec()
+    def _error(self, message):
+        Dialogs.critical(self, "Error Message", message)

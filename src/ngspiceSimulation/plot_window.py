@@ -8,36 +8,110 @@ with support for AC, DC, and Transient analysis visualization.
 
 from __future__ import division
 import os
-import re
-import sys
+import csv
 import json
-import traceback
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 from PyQt6 import QtGui, QtCore, QtWidgets
-from PyQt6.QtCore import Qt, QSettings, pyqtSignal
+from configuration import Dialogs
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout,
-                             QHBoxLayout, QListWidget, QListWidgetItem, QPushButton,
-                             QCheckBox, QGroupBox, QRadioButton, QButtonGroup,
-                             QLabel, QLineEdit, QSlider, QDoubleSpinBox, QMenu,
-                             QFileDialog, QColorDialog, QInputDialog,
-                             QMessageBox, QStatusBar,
-                             QSplitter, QToolButton, QWidgetAction, QGridLayout,
+                             QHBoxLayout, QPushButton,
+                             QCheckBox, QRadioButton, QButtonGroup,
+                             QLabel, QLineEdit, QSlider, QDoubleSpinBox,
+                             QFileDialog,
+                             QStatusBar,
+                             QSplitter, QToolButton,
                              QSizePolicy, QScrollArea)
-from PyQt6.QtGui import (QColor, QBrush, QPalette, QKeySequence, QShortcut,
-                         QPainter, QPixmap, QFont, QAction, QIcon, QPen)
+from PyQt6.QtGui import (QColor, QKeySequence, QShortcut,
+                         QPainter, QPixmap, QIcon, QPen)
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as _FigureCanvasBase
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.backend_bases import NavigationToolbar2
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from matplotlib.text import Text
-from matplotlib.ticker import FuncFormatter, ScalarFormatter
+
+
+class ThresholdSpinBox(QDoubleSpinBox):
+    """Spin box whose ``minimum()`` slot is an 'Auto' sentinel.
+
+    The render code treats ``value() == minimum()`` as "auto threshold". Naive
+    stepping made the only neighbour of Auto a useless extreme value (e.g.
+    -99.9), so stepping up out of Auto here jumps straight to the live
+    auto-computed midpoint, and stepping down below the lowest real value drops
+    back to Auto. Call :meth:`set_auto_value` whenever the signal span changes.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._auto_value = 0.0
+
+    def set_auto_value(self, value: float) -> None:
+        self._auto_value = float(value)
+
+    def stepBy(self, steps: int) -> None:
+        m = self.minimum()
+        lo = m + self.singleStep()
+        if self.value() == m:                      # currently "Auto"
+            if steps > 0:
+                target = min(max(self._auto_value, lo), self.maximum())
+                self.setValue(round(target, self.decimals()))
+            return                                 # down/no-op stays at Auto
+        if steps < 0 and self.value() <= lo + 1e-9:
+            self.setValue(m)                       # below lowest real → Auto
+            return
+        super().stepBy(steps)
+
+
+class FigureCanvas(_FigureCanvasBase):
+    """FigureCanvas with size hints decoupled from the live figure bbox.
+
+    Stock FigureCanvasQTAgg.sizeHint() returns get_width_height() — the
+    figure's current pixel size. Inside a QScrollArea with
+    setWidgetResizable(True) that creates a feedback loop: the scroll area
+    resizes the canvas to the viewport, the canvas resize updates the figure
+    bbox, the next sizeHint query returns a different size, the scroll area
+    re-lays-out, and so on. The cascade overflows Python's recursion limit,
+    surfacing as a RecursionError deep inside numpy's reduction during a
+    sizeHint call. Returning fixed hints removes the canvas from the layout
+    negotiation; actual canvas size still comes from real resize events, and
+    setMinimumHeight (stacked view) still overrides minimumSizeHint.
+    """
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(640, 480)
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(10, 10)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        """Force the initial HiDPI pixel-ratio sync matplotlib skips on Qt>=6.6.
+
+        FigureCanvasQT.showEvent has two branches. Below Qt 6.6 it connects
+        screenChanged *and* calls _update_screen(), which performs the initial
+        _update_pixel_ratio(). From Qt 6.6 it only installs a
+        DevicePixelRatioChange event filter -- and that filter fires solely when
+        the ratio *changes*. A window opened on a HiDPI screen whose ratio never
+        changes is therefore never synced: device_pixel_ratio stays 1 and
+        figure.dpi stays at its construction value, so Agg renders the buffer at
+        logical resolution and Qt stretches it to physical size. The plot looks
+        soft and pixelated while the surrounding Qt chrome stays sharp, and no
+        redraw, resize, or re-plot clears it because every one of those re-renders
+        at the same stale ratio.
+
+        Syncing once on show fixes the buffer resolution; it is a no-op on a 1.0
+        ratio display, and harmless if a future matplotlib restores the sync
+        itself (the ratio already matches, so _set_device_pixel_ratio returns
+        False and nothing redraws).
+        """
+        super().showEvent(event)
+        update = getattr(self, '_update_pixel_ratio', None)
+        if update is not None:
+            update()
 
 from configuration.Appconfig import Appconfig
 from .plotting_widgets import CollapsibleBox
@@ -45,13 +119,17 @@ from .data_extraction import DataExtraction
 
 logger = logging.getLogger(__name__)
 
-from .constants import *
+from .constants import (DEFAULT_DPI, DEFAULT_EXPORT_DPI, DEFAULT_FIGURE_SIZE,
+                        DEFAULT_VERTICAL_SPACING, DEFAULT_ZOOM_FACTOR,
+                        REFRESH_DEBOUNCE_MS, REDECIMATE_DEBOUNCE_MS,
+                        VIBRANT_COLOR_PALETTE)
 from .trace import Trace, CustomListWidget
 from ._pane_mixin import _PaneMixin
 from ._cursor_mixin import _CursorMixin
 from ._func_trace_mixin import _FuncTraceMixin
 from ._render_mixin import _RenderMixin
 from ._list_mixin import _ListMixin
+from ._palette import current_palette, matplotlib_rc_overrides
 
 class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixin, _ListMixin):
     """Main plotting widget for NGSpice simulation results."""
@@ -64,6 +142,11 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
         self.obj_appconfig = Appconfig()
+        # Theme-aware color dict, built once. Every surface, the matplotlib
+        # facecolors, the trace list rows, and the cursor chrome reference this
+        # single source of truth so a light/dark toggle never leaves stale
+        # white panels behind. Rebuilt on QEvent.PaletteChange (see changeEvent).
+        self._palette = current_palette(QtWidgets.QApplication.instance())
         logger.info(f"Complete Project Path: {self.file_path}")
         logger.info(f"Project Name: {self.project_name}")
         self.obj_appconfig.print_info(f'NGSpice simulation called: {self.file_path}')
@@ -78,6 +161,14 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
 
     def _initialize_data_structures(self) -> None:
         self._em_cache: Optional[int] = None  # invalidated by changeEvent on FontChange
+        # Re-entrancy guard for apply_theme. setStyleSheet() synchronously
+        # dispatches a QEvent.PaletteChange, whose changeEvent handler calls
+        # apply_theme again — an unguarded loop that recursed until Python's
+        # recursion limit blew (surfacing as a RecursionError deep in a canvas
+        # sizeHint/numpy reduction) or, with cheaper frames, spun long enough
+        # to freeze the GUI. The flag makes the self-induced PaletteChange a
+        # no-op while a genuine app theme toggle still re-skins exactly once.
+        self._applying_theme: bool = False
         self._resize_timer: QtCore.QTimer = QtCore.QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(120)
@@ -91,6 +182,12 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(REFRESH_DEBOUNCE_MS)
         self._refresh_timer.timeout.connect(self.refresh_plot)
+        # zoom/pan re-decimation: xlim_changed callbacks restart this so a
+        # wheel-zoom burst re-slices the decimated lines once, after it settles
+        self._decim_timer: QtCore.QTimer = QtCore.QTimer(self)
+        self._decim_timer.setSingleShot(True)
+        self._decim_timer.setInterval(REDECIMATE_DEBOUNCE_MS)
+        self._decim_timer.timeout.connect(self._redecimate_visible)
         self.traces: Dict[int, Trace] = {}
         # cursor_lines[i]: axvlines per pane; empty inner list = cursor not yet rendered
         self.cursor_lines: List[List[Optional[Line2D]]] = []
@@ -101,14 +198,30 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self.logic_thresholds: Dict[int, float] = {}
         self.vertical_spacing = DEFAULT_VERTICAL_SPACING
         self._func_line: Optional[Line2D] = None
+        self._empty_placeholder = None
         self._drag_cursor_idx: Optional[int] = None
         self._current_view_mode: str = 'normal'  # 'normal' | 'timing' | 'stacked'
         self.panes: List[Any] = []
         # incremental-refresh: skip full rebuild when composition unchanged; _force_full_refresh overrides
         self._drawn_signature: Optional[tuple] = None
         self._force_full_refresh: bool = False
+        # stacked pane identity, parallel to self.panes: ('t', trace_idx) or
+        # ('f', func_idx). Lets a visibility toggle reuse unchanged panes
+        # instead of fig.clear()-rebuilding the whole stack.
+        self._stacked_pane_keys: List[tuple] = []
+        # Line2D artists drawn with a min/max envelope; re-decimated from
+        # their raw arrays (line._esim_raw_xy) when the x-view changes.
+        self._decim_registry: List[Any] = []
+        # per-trace stats-overlay strings; sim data is static per load, so
+        # p-p/DC/RMS/freq never change for a given (trace, x-window)
+        self._stats_cache: Dict[tuple, str] = {}
         # layout freeze: stacked rebuild sets _pending_freeze; draw callback snapshots geometry and drops solver
         self._pending_freeze: bool = False
+        # canvas height the current frozen pane geometry was computed for. Our
+        # own bookkeeping, NOT canvas.height(): Qt applies a new minimum height
+        # asynchronously, so during a click burst the widget still reports the
+        # previous size while several layouts have already been placed.
+        self._canvas_effective_h: float = 0.0
         # display-only scale: line data stays in raw SI; ticks formatted as raw * _x_scale
         self._x_scale: float = 1.0
         self._x_unit: str = 's'
@@ -206,13 +319,93 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self._refresh_timer.stop()
         self._controls_timer.stop()
         self._resize_timer.stop()
+        self._decim_timer.stop()
         if hasattr(self, 'canvas'):
             self.canvas.close()
         if hasattr(self, 'fig'):
             plt.close(self.fig)
         super().closeEvent(event)
 
+    def _spin_arrow_icon(self, direction: str, color: str) -> str:
+        """Render a crisp up/down chevron PNG for spin-box buttons.
+
+        QSS border-triangle arrows collapse to a flat dash on some Qt styles,
+        so we paint real chevrons and cache them per (direction, color) in the
+        temp dir. Returns a forward-slash path for use in ``image: url(...)``.
+        """
+        key = color.lstrip('#')
+        path = os.path.join(QtCore.QDir.tempPath(), f"esim_spin_{direction}_{key}.png")
+        # The cache is valid only if the PNG still exists AND is non-empty. A
+        # temp-dir cleaner (or a failed prior save) can delete or truncate the
+        # file between two apply_theme calls; a bare os.path.exists() would
+        # then keep pointing image: url() at a missing/zero-byte file and the
+        # spin arrows silently vanish. Re-render on a missing OR empty cache.
+        try:
+            cached = os.path.exists(path) and os.path.getsize(path) > 0
+        except OSError:
+            cached = False
+        if not cached:
+            size = 16
+            pm = QPixmap(size, size)
+            pm.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(QColor(color))
+            pen.setWidthF(1.8)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            if direction == "up":
+                pts = [QtCore.QPointF(4, 10), QtCore.QPointF(8, 6), QtCore.QPointF(12, 10)]
+            else:
+                pts = [QtCore.QPointF(4, 6), QtCore.QPointF(8, 10), QtCore.QPointF(12, 6)]
+            painter.drawPolyline(QtGui.QPolygonF(pts))
+            painter.end()
+            # QPixmap.save returns False (no exception) when the temp dir is
+            # unwritable or was cleaned mid-write. Nothing actionable here --
+            # a missing image: url() just drops the arrow glyph (no crash),
+            # and the next apply_theme retries the render because the empty/
+            # absent file fails the cache check above.
+            pm.save(path, "PNG")
+        return path.replace(os.sep, '/')
+
     def apply_theme(self) -> None:
+        """Build and install the theme-aware QSS for the plotting window.
+
+        Driven entirely by ``self._palette``. Every surface, text color,
+        accent and overlay comes from there so the widget tracks light/dark
+        mode and the user-chosen accent — no hardcoded literals that caused
+        dark-mode contrast issues.
+        """
+        # setStyleSheet() below re-enters this method via a synchronous
+        # PaletteChange; bail if we're already mid-apply so it runs once.
+        if self._applying_theme:
+            return
+        self._applying_theme = True
+        try:
+            self._apply_theme_impl()
+        finally:
+            self._applying_theme = False
+
+    def _apply_theme_impl(self) -> None:
+        # Re-theme every live matplotlib artist (facecolors, grid, ticks,
+        # labels, spines, legend, stats, cursors) and re-tint the nav-toolbar
+        # icons from the current palette. rcParams only style artists created
+        # AFTER an update and the toolbar tints its glyphs once at construction,
+        # so a live light/dark toggle would otherwise leave the plot surface and
+        # the toolbar on the old theme. Done in place (no refresh_plot) so the
+        # user's current zoom/pan survives.
+        self._retheme_canvas()
+        # Re-install the canvas-scroll viewport color (widget-level sheet, so it
+        # must be re-applied on every theme apply — see create_plot_area).
+        try:
+            if getattr(self, "canvas_scroll", None) is not None:
+                self.canvas_scroll.setStyleSheet(
+                    f"QScrollArea {{ background-color: {self._palette['axes_face']}; "
+                    "border: none; }"
+                )
+        except Exception:
+            pass
         em      = self._em
         sb_w    = max(6,  em // 2)
         ind     = max(12, em - 2)
@@ -226,42 +419,205 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         btn_h   = max(24, em + 8)
         le_p    = max(4,  em // 3)
 
+        p = self._palette
+        up_ico   = self._spin_arrow_icon('up',   p['text'])
+        dn_ico   = self._spin_arrow_icon('down', p['text'])
+        up_ico_d = self._spin_arrow_icon('up',   p['text_subtle'])
+        dn_ico_d = self._spin_arrow_icon('down', p['text_subtle'])
         theme_stylesheet = f"""
-        QMenuBar {{ border-radius: 8px; background-color: #FFFFFF; border: 1px solid #E0E0E0; padding: 2px; }}
-        QStatusBar {{ border-radius: 8px; background-color: #FFFFFF; border: 1px solid #E0E0E0; padding: 2px; }}
-        QWidget {{ background-color: #FFFFFF; color: #212121; }}
-        QListWidget {{ background-color: #FFFFFF; border: 1px solid #E0E0E0; padding: 2px; outline: none; selection-background-color: transparent; selection-color: inherit; }}
+        QMenuBar {{ border-radius: 8px; background-color: {p['surface']}; border: 1px solid {p['border']}; padding: 2px; color: {p['text']}; }}
+        QStatusBar {{ border-radius: 8px; background-color: {p['surface']}; border: 1px solid {p['border']}; padding: 2px; color: {p['text_muted']}; }}
+        QWidget {{ background-color: {p['bg']}; color: {p['text']}; }}
+        QListWidget {{ background-color: {p['bg']}; border: 1px solid {p['border']}; padding: 2px; outline: none; selection-background-color: transparent; selection-color: inherit; }}
         QListWidget::item {{ min-height: {item_h}px; padding: {item_pv}px {item_ph}px; margin: 1px 2px; background-color: transparent; border: none; }}
         QListWidget::item:selected {{ background-color: transparent; border: none; }}
-        QListWidget::item:hover {{ background-color: rgba(0, 0, 0, 0.04); }}
+        QListWidget::item:hover {{ background-color: {p['hover_overlay']}; }}
         QListWidget::item:focus {{ outline: none; }}
-        QGroupBox {{ border: 1px solid #E0E0E0; margin-top: 0.5em; padding-top: 0.5em; }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }}
-        QPushButton {{ background-color: #FFFFFF; border: 1px solid #E0E0E0; padding: {btn_pv}px {btn_ph}px; min-height: {btn_h}px; font-weight: 500; }}
-        QPushButton:hover {{ background-color: #F2F2F2; border-color: #1976D2; }}
-        QPushButton:pressed {{ background-color: #E0E0E0; }}
+        QGroupBox {{ border: 1px solid {p['border']}; margin-top: 0.5em; padding-top: 0.5em; color: {p['text']}; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; color: {p['text_muted']}; }}
+        QPushButton {{ background-color: {p['panel']}; border: 1px solid {p['border']}; padding: {btn_pv}px {btn_ph}px; min-height: {btn_h}px; font-weight: 500; color: {p['text']}; border-radius: 4px; }}
+        QPushButton:hover {{ background-color: {p['surface']}; border-color: {p['primary']}; }}
+        QPushButton:pressed {{ background-color: {p['pressed_overlay']}; }}
         QCheckBox::indicator {{ width: {ind}px; height: {ind}px; }}
-        QMenu {{ background-color: #FFFFFF; border: 1px solid #E0E0E0; }}
-        QMenu::item:selected {{ background-color: #E3F2FD; }}
-        QLineEdit {{ border: 1px solid #E0E0E0; padding: {le_p}px {btn_ph}px; background-color: #FAFAFA; }}
-        QLineEdit:focus {{ border-color: #1976D2; background-color: #FFFFFF; }}
-        QSlider::groove:horizontal {{ border: 1px solid #E0E0E0; height: 4px; background: #E0E0E0; }}
-        QSlider::handle:horizontal {{ background: #1976D2; border: 1px solid #1976D2; width: {sldr}px; height: {sldr}px; margin: {sldr_m}px 0; }}
-        QScrollBar:vertical {{ background-color: #F5F5F5; width: {sb_w}px; border: none; border-radius: {sb_w // 2}px; }}
-        QScrollBar::handle:vertical {{ background-color: #BDBDBD; border-radius: {sb_w // 2}px; min-height: 20px; margin: 2px; }}
-        QScrollBar::handle:vertical:hover {{ background-color: #9E9E9E; }}
+        QMenu {{ background-color: {p['bg']}; border: 1px solid {p['border']}; color: {p['text']}; }}
+        QMenu::item:selected {{ background-color: {p['selection_bg']}; color: {p['selection_text']}; }}
+        QLineEdit {{ border: 1px solid {p['border']}; padding: {le_p}px {btn_ph}px; background-color: {p['surface']}; color: {p['text']}; }}
+        QLineEdit:focus {{ border-color: {p['primary']}; background-color: {p['bg']}; }}
+        QAbstractSpinBox {{ border: 1px solid {p['border']}; padding: {le_p}px {btn_ph}px; padding-right: 20px; background-color: {p['surface']}; color: {p['text']}; border-radius: 4px; min-height: {btn_h}px; }}
+        QAbstractSpinBox:focus {{ border-color: {p['primary']}; background-color: {p['bg']}; }}
+        QAbstractSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 17px; margin: 1px 2px 0 0; border: none; background: transparent; border-radius: 3px; }}
+        QAbstractSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 17px; margin: 0 2px 1px 0; border: none; background: transparent; border-radius: 3px; }}
+        QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {{ background-color: {p['selection_bg']}; }}
+        QAbstractSpinBox::up-button:pressed, QAbstractSpinBox::down-button:pressed {{ background-color: {p['pressed_overlay']}; }}
+        QAbstractSpinBox::up-arrow {{ image: url({up_ico}); width: 12px; height: 12px; }}
+        QAbstractSpinBox::down-arrow {{ image: url({dn_ico}); width: 12px; height: 12px; }}
+        QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {{ image: url({up_ico_d}); }}
+        QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{ image: url({dn_ico_d}); }}
+        QSlider::groove:horizontal {{ border: 1px solid {p['border']}; height: 4px; background: {p['border']}; }}
+        QSlider::handle:horizontal {{ background: {p['primary']}; border: 1px solid {p['primary']}; width: {sldr}px; height: {sldr}px; margin: {sldr_m}px 0; border-radius: {sldr // 2}px; }}
+        QScrollBar:vertical {{ background-color: transparent; width: {sb_w}px; border: none; border-radius: {sb_w // 2}px; }}
+        QScrollBar::handle:vertical {{ background-color: {p['border_strong']}; border-radius: {sb_w // 2}px; min-height: 20px; margin: 2px; }}
+        QScrollBar::handle:vertical:hover {{ background-color: {p['text_subtle']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-        QSplitter::handle:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0.49 transparent, stop:0.5 #D0D0D0, stop:0.51 transparent); }}
-        QSplitter::handle:horizontal:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0.45 transparent, stop:0.5 #1976D2, stop:0.55 transparent); }}
+        QSplitter::handle:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0.49 transparent, stop:0.5 {p['border_strong']}, stop:0.51 transparent); }}
+        QSplitter::handle:horizontal:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0.45 transparent, stop:0.5 {p['primary']}, stop:0.55 transparent); }}
+        QLabel#analysisLabel {{ font-weight: bold; font-size: {max(11, em - 4)}px; padding: {max(3, em // 5)}px; color: {p['text']}; }}
+        QLabel#cursorLabel {{ font-size: 13px; padding: 3px 0; color: {p['text']}; }}
+        QLabel#cursorHelp {{ color: {p['text_muted']}; font-size: 11px; }}
+        QLabel#cursorSeparator {{ background-color: {p['divider']}; margin: 2px 0; }}
+        QToolButton#plotToolButton {{ border: none; background: transparent; border-radius: 3px; }}
+        QToolButton#plotToolButton:hover {{ background-color: {p['hover_overlay']}; }}
+        QToolButton#plotToolButton:checked {{ background-color: {p['selection_bg']}; }}
         """
         self.setStyleSheet(theme_stylesheet)
+
+    def _retheme_canvas(self) -> None:
+        """Recolor live matplotlib artists + nav-toolbar icons in place.
+
+        rcParams only style artists created *after* an update, so a live
+        light/dark toggle leaves every already-drawn gridline / tick / label /
+        spine / legend / stats title on the old theme; the nav toolbar tints its
+        icons once at construction and never re-tints on PaletteChange. This
+        walks them all and re-applies palette tokens without a refresh_plot, so
+        the user's zoom/pan and nav stack are untouched. Trace lines and the
+        left-title trace names are data-colored (VIBRANT_COLOR_PALETTE) and are
+        deliberately left alone. Fully guarded — a plot may not be built yet.
+        """
+        p = self._palette
+        fig = getattr(self, "fig", None)
+        if fig is not None:
+            try:
+                fig.set_facecolor(p['bg'])
+                fig.patch.set_facecolor(p['bg'])
+            except Exception:
+                pass
+            # In stacked view every inner (non-last) pane paints its bottom
+            # spine as a row-divider separator; only those get spine_separator,
+            # all other visible spines get the normal axes edge.
+            sep_axes = set()
+            if getattr(self, "_current_view_mode", "") == "stacked" \
+                    and len(getattr(self, "panes", [])) > 1:
+                sep_axes = {id(a) for a in self.panes[:-1]}
+            for ax in fig.axes:
+                try:
+                    ax.set_facecolor(p['axes_face'])
+                    is_sep = id(ax) in sep_axes
+                    for name, sp in ax.spines.items():
+                        if not sp.get_visible():
+                            continue
+                        if name == 'bottom' and is_sep:
+                            sp.set_color(p['spine_separator'])
+                        else:
+                            sp.set_color(p['axes_edge'])
+                    ax.tick_params(axis='both', colors=p['tick_color'],
+                                   labelcolor=p['tick_color'])
+                    ax.xaxis.label.set_color(p['label_color'])
+                    ax.yaxis.label.set_color(p['label_color'])
+                    for gl in ax.get_xgridlines() + ax.get_ygridlines():
+                        gl.set_color(p['grid_color'])
+                    # loc='right' title = stats/chrome overlay; loc='left' title
+                    # = data-colored trace name (leave it).
+                    rt = getattr(ax, '_right_title', None)
+                    if rt is not None and rt.get_text():
+                        rt.set_color(p['stats_text'])
+                    # Explicitly chrome-tagged free text (timing placeholder).
+                    for txt in ax.texts:
+                        if txt.get_gid() == 'esim-chrome':
+                            txt.set_color(p['info_text'])
+                    leg = ax.get_legend()
+                    if leg is not None:
+                        fr = leg.get_frame()
+                        fr.set_facecolor(p['legend_face'])
+                        fr.set_edgecolor(p['legend_edge'])
+                        for t in leg.get_texts():
+                            t.set_color(p['label_color'])
+                except Exception:
+                    pass
+            # Timing view colors ytick labels by trace (data), so restore those
+            # after the generic tick_params pass above overwrote them.
+            try:
+                self.update_timing_tick_colors()
+            except Exception:
+                pass
+            # Cursor axvlines are created plain red/blue; brighten them per
+            # palette so they read on dark theme.
+            try:
+                cur = (p['cursor1'], p['cursor2'])
+                for i, pane_lines in enumerate(getattr(self, "cursor_lines", [])):
+                    col = cur[i] if i < len(cur) else p['cursor_delta']
+                    for ln in pane_lines:
+                        if ln is not None:
+                            ln.set_color(col)
+            except Exception:
+                pass
+        self._refresh_toolbar_icons()
+        try:
+            if getattr(self, "canvas", None) is not None:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _refresh_toolbar_icons(self) -> None:
+        """Re-tint the nav-toolbar and custom tool-button icons from the palette.
+
+        matplotlib's NavigationToolbar2QT (mpl 3.10 backend_qt) tints each PNG
+        icon with the widget foreground color once, at construction, and does
+        nothing on PaletteChange — so a toolbar built under dark theme keeps its
+        near-white glyphs, invisible on a light background after a toggle.
+        Rebuild every action icon through the (private) _icon(); the toolitems /
+        _actions / _icon('<name>.png') shape is pinned to mpl 3.10.x, so the
+        whole thing is wrapped defensively against an API shift on upgrade.
+        """
+        tb = getattr(self, "nav_toolbar", None)
+        if tb is not None:
+            # _icon() decides whether to tint (and with what) from the
+            # TOOLBAR's own palette (backgroundRole value < 128 -> fill with
+            # foregroundRole). This runs mid-repolish: the window QSS that
+            # writes the new theme's colors into descendant palettes hasn't
+            # been re-installed yet, so tb.palette() still holds the OLD
+            # theme and the rebuilt icons come out the old color (white on
+            # white after dark->light). Force the palette to the target
+            # theme's colors first so the tint is deterministic regardless
+            # of polish ordering; the QSS repolish then re-writes the same
+            # values, so this never fights it.
+            try:
+                p = self._palette
+                pal = tb.palette()
+                pal.setColor(tb.backgroundRole(), QColor(p['bg']))
+                pal.setColor(tb.foregroundRole(), QColor(p['text']))
+                tb.setPalette(pal)
+            except Exception:
+                pass
+            try:
+                for _text, _tip, image, callback in tb.toolitems:
+                    if not image or callback is None:
+                        continue
+                    act = tb._actions.get(callback)
+                    if act is not None:
+                        act.setIcon(tb._icon(image + '.png'))
+            except Exception:
+                pass
+            # _fig_btn reuses the toolbar's own tinting path. _icon() wants
+            # the filename WITH extension (mpl 3.10 docstring); extensionless
+            # resolves to a nonexistent path and a null pixmap.
+            try:
+                if getattr(self, "_fig_btn", None) is not None:
+                    self._fig_btn.setIcon(tb._icon('qt4_editor_options.png'))
+            except Exception:
+                pass
+        # _focus_btn is a hand-painted glyph — re-render at the palette color.
+        try:
+            if getattr(self, "_focus_btn", None) is not None and tb is not None:
+                self._focus_btn.setIcon(
+                    self._make_focus_icon(tb.iconSize().width(),
+                                          self._palette['text']))
+        except Exception:
+            pass
 
     def create_main_frame(self) -> None:
         main_widget_layout = QVBoxLayout(self)
         main_widget_layout.setContentsMargins(5, 5, 5, 5)
-        self.menu_bar = QtWidgets.QMenuBar(self)
-        main_widget_layout.addWidget(self.menu_bar)
         content_widget = QWidget()
         content_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         main_layout = QHBoxLayout(content_widget)
@@ -295,7 +651,6 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self.measure_label = QLabel("")
         self.status_bar.addPermanentWidget(self.measure_label)
         main_widget_layout.addWidget(self.status_bar)
-        self.create_menu_bar()
         self.setWindowTitle(f'Python Plotting - {self.project_name}')
 
     def create_waveform_list(self) -> QWidget:
@@ -303,9 +658,9 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         left_layout = QVBoxLayout(left_widget)
         em = self._em
         self.analysis_label = QLabel()
-        self.analysis_label.setStyleSheet(
-            f"font-weight: bold; font-size: {max(11, em - 4)}px; padding: {max(3, em // 5)}px;"
-        )
+        # Font + theme styling live in QSS under #analysisLabel so theme
+        # toggles re-apply cleanly (inline-stylesheet list stays empty).
+        self.analysis_label.setObjectName("analysisLabel")
         left_layout.addWidget(self.analysis_label)
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search waveforms...")
@@ -318,6 +673,15 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self.waveform_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.waveform_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_layout.addWidget(self.waveform_list)
+        # Single smart-toggle: selects all when not all are on, deselects all
+        # when they are. Label always names the action the next click performs,
+        # so turning some waveforms off after a select-all flips it back to
+        # "Select All" — no dead/no-op second button.
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.setToolTip(
+            "Toggle every waveform on or off. The label shows the next action.")
+        self.select_all_btn.clicked.connect(self.toggle_select_all_waveforms)
+        left_layout.addWidget(self.select_all_btn)
         QShortcut(QKeySequence.StandardKey.SelectAll, self.waveform_list,
                   activated=self.select_all_waveforms)
         return left_widget
@@ -337,35 +701,69 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
                 self.nav_toolbar.removeAction(_a)
         _icon_sz = self.nav_toolbar.iconSize()
         _tb_h    = self.nav_toolbar.sizeHint().height()
-        _btn_style = (
-            "QToolButton { border: none; background: transparent; border-radius: 3px; }"
-            "QToolButton:hover { background: rgba(0,0,0,0.06); }"
-            "QToolButton:checked { background: rgba(25,118,210,0.12); }"
-        )
-        _fig_btn = QToolButton()
-        _fig_btn.setIcon(self.nav_toolbar._icon('qt4_editor_options'))
-        _fig_btn.setIconSize(_icon_sz)
-        _fig_btn.setFixedSize(_tb_h, _tb_h)
-        _fig_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        _fig_btn.setToolTip('Figure Options (P)')
-        _fig_btn.setStyleSheet(_btn_style)
-        _fig_btn.clicked.connect(self.open_figure_options)
+        # Held on self so _refresh_toolbar_icons can re-tint it on a theme
+        # toggle — its icon is palette-tinted at construction (was a local, so
+        # nothing could ever refresh it and it stayed the old theme's color).
+        self._fig_btn = QToolButton()
+        self._fig_btn.setIcon(self.nav_toolbar._icon('qt4_editor_options.png'))
+        self._fig_btn.setIconSize(_icon_sz)
+        self._fig_btn.setFixedSize(_tb_h, _tb_h)
+        self._fig_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._fig_btn.setToolTip('Figure Options (P)')
+        self._fig_btn.setObjectName("plotToolButton")
+        self._fig_btn.clicked.connect(self.open_figure_options)
         self._focus_btn = QToolButton()
-        self._focus_btn.setIcon(self._make_focus_icon(_icon_sz.width()))
+        self._focus_btn.setIcon(
+            self._make_focus_icon(_icon_sz.width(), self._palette['text']))
         self._focus_btn.setIconSize(_icon_sz)
         self._focus_btn.setFixedSize(_tb_h, _tb_h)
         self._focus_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._focus_btn.setCheckable(True)
         self._focus_btn.setToolTip('Focus plot — hide panels (F)')
-        self._focus_btn.setStyleSheet(_btn_style)
+        self._focus_btn.setObjectName("plotToolButton")
         self._focus_btn.toggled.connect(self._toggle_focus_mode)
         QShortcut(QKeySequence('F'), self, activated=self._focus_btn.toggle)
+        # Undo/redo step through matplotlib's nav view stack: every completed
+        # zoom/pan pushes a view, so Ctrl+Z spam walks back to the original.
+        # (Toolbar Back/Home buttons do the same; these are keyboard parity.)
+        QShortcut(QKeySequence.StandardKey.Undo, self,
+                  activated=self.nav_toolbar.back)
+        QShortcut(QKeySequence.StandardKey.Redo, self,
+                  activated=self.nav_toolbar.forward)
+        # Shortcuts the removed View menu used to carry, kept global.
+        QShortcut(QKeySequence('Ctrl+0'), self, activated=self.reset_view)
+        QShortcut(QKeySequence('Ctrl++'), self, activated=self.zoom_in)
+        QShortcut(QKeySequence('Ctrl+-'), self, activated=self.zoom_out)
         toolbar_row = QHBoxLayout()
         toolbar_row.setContentsMargins(0, 0, 0, 0)
         toolbar_row.setSpacing(0)
         toolbar_row.addWidget(self.nav_toolbar)
-        toolbar_row.addWidget(_fig_btn)
+        toolbar_row.addWidget(self._fig_btn)
         toolbar_row.addWidget(self._focus_btn)
+        toolbar_row.addStretch(1)
+        # Contextual fullscreen toggle (panel header, not a global toolbar):
+        # fullscreen this plotting panel and dock it back.
+        from frontEnd.FullScreen import FullScreenToggle
+        self._fs_btn = FullScreenToggle()
+        # Height matches the toolbar row; width is free so the "Fullscreen"
+        # label is not clipped by a square box (the other panels never clamped
+        # it). Icon-only was the discoverability complaint this fixes.
+        self._fs_btn.setFixedHeight(_tb_h)
+        toolbar_row.addWidget(self._fs_btn)
+        # matplotlib wedges its x/y coordinate readout (locLabel) at the end
+        # of the nav toolbar, i.e. between Save and Figure Options. Yank it out
+        # and pin it to the far right, after the fullscreen toggle.
+        _loc = getattr(self.nav_toolbar, 'locLabel', None)
+        if _loc is not None:
+            from PyQt6.QtWidgets import QWidgetAction
+            for _a in self.nav_toolbar.actions():
+                if isinstance(_a, QWidgetAction) and _a.defaultWidget() is _loc:
+                    self.nav_toolbar.removeAction(_a)
+                    break
+            _loc.setParent(None)
+            _loc.setAlignment(Qt.AlignmentFlag.AlignRight
+                              | Qt.AlignmentFlag.AlignVCenter)
+            toolbar_row.addWidget(_loc)
         center_layout.addLayout(toolbar_row)
         # Wrap canvas in QScrollArea so stacked-view with many panes scrolls
         # vertically instead of squashing every signal to ~30 pixels. Canvas
@@ -378,6 +776,12 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.canvas_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # The scroll viewport is painted with the canvas surface so the empty
+        # canvas area doesn't flash white in dark mode (no border — it crowded
+        # the bottom time axis and waveform labels). The stylesheet is installed
+        # in _apply_theme_impl, not here: a widget-level sheet overrides the
+        # window QSS, so baking it once left the viewport on the old theme after
+        # a light/dark toggle. Re-installing it every apply keeps it in sync.
         center_layout.addWidget(self.canvas_scroll)
         self.canvas.mpl_connect('resize_event', self._on_canvas_resize)
         self.canvas.mpl_connect('button_press_event', self.on_canvas_click)
@@ -462,8 +866,8 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         timing_layout.setSpacing(sp)
         threshold_layout = QHBoxLayout()
         threshold_layout.addWidget(QLabel("Threshold:"))
-        self.threshold_spinbox = QDoubleSpinBox()
-        self.threshold_spinbox.setRange(-100, 100)
+        self.threshold_spinbox = ThresholdSpinBox()
+        self.threshold_spinbox.setRange(-10, 10)
         self.threshold_spinbox.setDecimals(3)
         self.threshold_spinbox.setSingleStep(0.1)
         self.threshold_spinbox.setSuffix("")
@@ -496,19 +900,21 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         cursor_layout.setContentsMargins(ih, iv, ih, iv)
         cursor_layout.setSpacing(sp)
 
+        # font/theme color come from QSS (#cursorLabel); the inline <b>/<span>
+        # colors in the text are per-cursor data, not chrome, so they stay.
         self.cursor1_label = QLabel('<b style="color:#e53935">C1</b>  <span style="color:#aaa">not set</span>')
         self.cursor1_label.setWordWrap(True)
-        self.cursor1_label.setStyleSheet("font-size: 13px; padding: 3px 0;")
+        self.cursor1_label.setObjectName("cursorLabel")
         self.cursor2_label = QLabel('<b style="color:#1976d2">C2</b>  <span style="color:#aaa">not set</span>')
         self.cursor2_label.setWordWrap(True)
-        self.cursor2_label.setStyleSheet("font-size: 13px; padding: 3px 0;")
+        self.cursor2_label.setObjectName("cursorLabel")
         self.delta_label = QLabel('<b style="color:#e65100">ΔX</b>  <span style="color:#aaa">—</span>')
-        self.delta_label.setStyleSheet("font-size: 13px; padding: 3px 0;")
+        self.delta_label.setObjectName("cursorLabel")
 
         def _cursor_sep() -> QLabel:
             s = QLabel()
             s.setFixedHeight(1)
-            s.setStyleSheet("background-color: #d0d0d0; margin: 2px 0;")
+            s.setObjectName("cursorSeparator")
             return s
 
         cursor_layout.setSpacing(8)
@@ -520,7 +926,7 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         cursor_help = QLabel(
             "L-click = Cursor 1   ·   Middle / R-click = Cursor 2\n"
             "R-click in stacked view = pane menu")
-        cursor_help.setStyleSheet("color: #757575; font-size: 11px;")
+        cursor_help.setObjectName("cursorHelp")
         cursor_help.setWordWrap(True)
         cursor_layout.addWidget(cursor_help)
         self.clear_cursors_btn = QPushButton("Clear Cursors")
@@ -535,9 +941,8 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         export_layout = QVBoxLayout(export_group)
         export_layout.setContentsMargins(ih, iv, ih, iv)
         export_layout.setSpacing(sp)
-        self.export_btn = QPushButton("Export Image")
-        self.export_btn.clicked.connect(self.export_image)
-        export_layout.addWidget(self.export_btn)
+        # Plot Function kept at the top so adding export buttons below never
+        # pushes it further down the panel.
         self.func_input = QLineEdit()
         self.func_input.setPlaceholderText("e.g., v(net1) + v(net2)  or  abs(v(net1))")
         self.func_input.returnPressed.connect(self.plot_function)
@@ -545,30 +950,25 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self.plot_func_btn = QPushButton("Plot Function")
         self.plot_func_btn.clicked.connect(self.plot_function)
         export_layout.addWidget(self.plot_func_btn)
+        # Export buttons grouped in a single row: image (visual) + CSV (data).
+        export_row = QHBoxLayout()
+        export_row.setSpacing(sp)
+        self.export_btn = QPushButton("Export Image")
+        self.export_btn.clicked.connect(self.export_image)
+        export_row.addWidget(self.export_btn)
+        self.export_csv_btn = QPushButton("Export CSV")
+        self.export_csv_btn.setToolTip(
+            "Export ALL simulation waveforms as a CSV table (X axis + one "
+            "column per signal, selected or not) — ready to hand to an AI or "
+            "spreadsheet.")
+        self.export_csv_btn.clicked.connect(self.export_csv)
+        export_row.addWidget(self.export_csv_btn)
+        export_layout.addLayout(export_row)
         export_box.addWidget(export_group)
         right_layout.addWidget(export_box)
 
         right_layout.addStretch()
         return right_widget
-
-    def create_menu_bar(self) -> None:
-        file_menu = self.menu_bar.addMenu('File')
-        export_action = QAction('Export Image...', self)
-        export_action.triggered.connect(self.export_image)
-        file_menu.addAction(export_action)
-        view_menu = self.menu_bar.addMenu('View')
-        zoom_in_action = QAction('Zoom In', self)
-        zoom_in_action.setShortcut('Ctrl++')
-        zoom_in_action.triggered.connect(self.zoom_in)
-        view_menu.addAction(zoom_in_action)
-        zoom_out_action = QAction('Zoom Out', self)
-        zoom_out_action.setShortcut('Ctrl+-')
-        zoom_out_action.triggered.connect(self.zoom_out)
-        view_menu.addAction(zoom_out_action)
-        reset_view_action = QAction('Reset View', self)
-        reset_view_action.setShortcut('Ctrl+0')
-        reset_view_action.triggered.connect(self.reset_view)
-        view_menu.addAction(reset_view_action)
 
     def _rebuild_nb_sorted(self) -> None:
         """Cache NBList sorted longest-first for use in _resolve_expr."""
@@ -625,7 +1025,6 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
                 # it shows a per-axes selector so each pane can be edited.
                 self.fig.canvas.toolbar.edit_parameters()
                 return
-            from matplotlib.backends.qt_compat import QtWidgets
             from matplotlib.backends.qt_editor import _formlayout
             if hasattr(_formlayout, 'FormDialog'):
                 current_title = self.fig._suptitle.get_text() if self.fig._suptitle is not None else ''
@@ -656,10 +1055,10 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
                             self.axes.set_ylim(results[5], results[6])
                     self.canvas.draw()
             else:
-                QMessageBox.information(self, "Figure Options", "Figure options are limited in this environment.\nYou can use the zoom and pan tools in the toolbar.")
+                Dialogs.information(self, "Figure Options", "Figure options are limited in this environment.\nYou can use the zoom and pan tools in the toolbar.")
         except Exception as e:
             logger.error(f"Error opening figure options: {e}")
-            QMessageBox.information(self, "Figure Options", "Basic figure editing is available through the toolbar.")
+            Dialogs.information(self, "Figure Options", "Basic figure editing is available through the toolbar.")
 
     def _update_mode_controls(self) -> None:
         stacked = self.radio_stacked.isChecked()
@@ -678,12 +1077,15 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         self.refresh_plot()
 
     @staticmethod
-    def _make_focus_icon(size: int) -> QIcon:
+    def _make_focus_icon(size: int, color: str = '#444444') -> QIcon:
+        # color defaults to the old light-mode literal for back-compat, but
+        # callers pass the palette text color so the glyph stays legible in
+        # dark mode too (and _refresh_toolbar_icons re-renders it on toggle).
         px = QPixmap(size, size)
         px.fill(Qt.GlobalColor.transparent)
         p = QPainter(px)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor('#444444'), max(1, size // 12), Qt.PenStyle.SolidLine,
+        p.setPen(QPen(QColor(color), max(1, size // 12), Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         m = max(2, size // 6)
         a = max(3, size // 4)
@@ -741,6 +1143,7 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         x_target = event.xdata
 
         near = self._find_nearest_cursor(event)
+        self._debug_log_click(event, near)   # no-op unless ESIM_CURSOR_DEBUG is set
         if event.button == 1:
             if near is not None:
                 self._drag_cursor_idx = near
@@ -754,6 +1157,40 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         elif event.button == 3:  # right-click (non-stacked): cursor 2
             self._drag_cursor_idx = None
             self.set_cursor(1, x_target)
+
+    def _debug_log_click(self, event, near) -> None:
+        """TEMPORARY: dump cursor hit-test terms when ESIM_CURSOR_DEBUG is set.
+
+        Diagnosing a report of clicks grabbing an existing cursor instead of
+        placing one. Writes to the path in ESIM_CURSOR_DEBUG; unset (the
+        normal case) it returns before touching anything. Delete once the
+        false-hit cause is identified.
+        """
+        path = os.environ.get('ESIM_CURSOR_DEBUG')
+        if not path:
+            return
+        try:
+            xlim = self.axes.get_xlim()
+            width_px = self.axes.get_window_extent().width
+            span = xlim[1] - xlim[0]
+            threshold = 8 * span / width_px if width_px else float('nan')
+            click_px = (abs(event.xdata - self.cursor_positions[near])
+                        * width_px / span
+                        if (near is not None and span
+                            and event.xdata is not None) else None)
+            with open(path, 'a', encoding='utf-8') as fh:
+                fh.write(
+                    f"btn={event.button} mode={self._current_view_mode} "
+                    f"nav={self.nav_toolbar.mode!r} panes={len(self.panes)} "
+                    f"inaxes={event.inaxes in self.panes} xdata={event.xdata!r} "
+                    f"xlim={xlim} width_px={width_px:.1f} "
+                    f"fig_px={tuple(self.fig.get_size_inches() * self.fig.dpi)} "
+                    f"canvas={self.canvas.width()}x{self.canvas.height()} "
+                    f"dpr={getattr(self.canvas, 'device_pixel_ratio', '?')} "
+                    f"threshold={threshold:.6g} positions={self.cursor_positions} "
+                    f"near={near} click_dist_px={click_px}\n")
+        except Exception as exc:              # diagnostics must never break the UI
+            logger.debug("cursor debug log failed: %s", exc)
 
     def on_canvas_release(self, event) -> None:
         # If a cursor was being dragged, recompute the full per-signal
@@ -850,6 +1287,8 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
             pan_distance = (xlim[1] - xlim[0]) * 0.1 * (-1 if event.button == 'up' else 1)
             event.inaxes.set_xlim(xlim[0] + pan_distance, xlim[1] + pan_distance)
         self.canvas.draw()
+        # Record this view so Ctrl+Z / toolbar Back can undo a scroll zoom too.
+        self.nav_toolbar.push_current()
 
     def eventFilter(self, obj, event) -> bool:
         if (obj is self.canvas and
@@ -874,7 +1313,101 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
                 self.status_bar.showMessage(f"Image exported to {file_name}", 3000)
             except Exception as e:
                 logger.error(f"Error exporting image: {e}")
-                QMessageBox.warning(self, "Export Error", f"Failed to export image: {str(e)}")
+                Dialogs.warning(self, "Export Error", f"Failed to export image: {str(e)}")
+
+    def _collect_plot_data(self) -> Tuple[List[str], "np.ndarray"]:
+        """Build a rectangular table of the whole simulation's data.
+
+        First column is the X axis (Time / Frequency / Voltage sweep depending
+        on analysis type); each following column is one signal from the
+        simulation, named with its unit. EVERY node/branch is exported, not
+        just the visible/selected traces, so the user can inspect waveforms
+        they never plotted. Any user-defined function traces are appended too.
+        All columns are clipped to the shortest length so the result is a clean
+        rectangle the csv writer (or an AI) can consume without ragged rows.
+
+        Returns (header, matrix) where matrix is a 2-D float array with one
+        column per header entry. Raises ValueError if there is no data.
+        """
+        raw_x = np.asarray(self.obj_dataext.x, dtype=float)
+
+        # Match the on-screen view: transient plots drop the initial settling
+        # region, so the CSV reflects exactly what the user sees.
+        start_idx = 0
+        if self.plot_type[0] == DataExtraction.TRANSIENT_ANALYSIS:
+            s = self._get_transient_start_idx(raw_x)
+            if 0 < s < len(raw_x):
+                start_idx = s
+        x = raw_x[start_idx:]
+
+        atype = self.plot_type[0]
+        if atype == DataExtraction.AC_ANALYSIS:
+            x_label = "Frequency (Hz)"
+        elif atype == DataExtraction.DC_ANALYSIS:
+            x_label = "Voltage Sweep (V)"
+        else:
+            x_label = "Time (s)"
+
+        columns: List[Tuple[str, "np.ndarray"]] = [(x_label, x)]
+
+        # Every signal in the simulation, not just visible/selected ones.
+        nb = self.obj_dataext.NBList
+        for idx in range(len(self.obj_dataext.y)):
+            y = np.asarray(self.obj_dataext.y[idx], dtype=float)[start_idx:]
+            name = (self.traces[idx].name if idx in self.traces
+                    else nb[idx] if idx < len(nb) else f"col{idx}")
+            unit = "V" if idx < self.obj_dataext.volts_length else "A"
+            columns.append((f"{name} ({unit})", y))
+
+        # All user-defined function traces. They are derived from the full x
+        # array, so trim them by the same start_idx when their length matches.
+        for label, _fx, fy, *_ in self._func_traces:
+            fy = np.asarray(fy, dtype=float)
+            if len(fy) == len(raw_x):
+                fy = fy[start_idx:]
+            columns.append((label, fy))
+
+        if len(columns) == 1:
+            raise ValueError("No simulation data to export.")
+
+        n = min(len(arr) for _, arr in columns)
+        if n == 0:
+            raise ValueError("Plotted traces contain no data points.")
+
+        header = [name for name, _ in columns]
+        # Clip every column to the shortest length and stack into one 2-D
+        # array so the body can be written with np.savetxt (C-level). The
+        # previous O(rows*cols) Python float()/format() loop was slow and
+        # memory-heavy on million-row transients.
+        matrix = np.column_stack(
+            [np.asarray(arr[:n], dtype=float) for _, arr in columns])
+        return header, matrix
+
+    def export_csv(self) -> None:
+        try:
+            header, matrix = self._collect_plot_data()
+        except ValueError as e:
+            Dialogs.information(self, "Export CSV", str(e))
+            return
+
+        file_name, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV", "", "CSV Files (*.csv);;All Files (*)")
+        if not file_name:
+            return
+        if '.' not in os.path.basename(file_name):
+            file_name += '.csv'
+        try:
+            with open(file_name, 'w', newline='', encoding='utf-8') as f:
+                # Header via csv.writer so names containing commas are quoted;
+                # numeric body via np.savetxt (vectorized) so large exports stay
+                # fast. Both use '\n' so line endings are consistent, and field
+                # counts line up: exactly one column per header name.
+                csv.writer(f, lineterminator='\n').writerow(header)
+                np.savetxt(f, matrix, delimiter=',', fmt='%.10g')
+            self.status_bar.showMessage(f"CSV exported to {file_name}", 3000)
+        except Exception as e:
+            logger.error(f"Error exporting CSV: {e}")
+            Dialogs.warning(self, "Export Error", f"Failed to export CSV: {str(e)}")
 
     def clear_plot(self) -> None:
         self.timing_annotations.clear()
@@ -899,6 +1432,8 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
             y_half = (ylim[1] - ylim[0]) * factor / 2
             ax.set_ylim(y_center - y_half, y_center + y_half)
         self.canvas.draw()
+        # Record this view so Ctrl+Z / toolbar Back can undo a button zoom too.
+        self.nav_toolbar.push_current()
 
     def zoom_in(self) -> None:
         self._zoom_panes(DEFAULT_ZOOM_FACTOR)
@@ -931,6 +1466,12 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
             'legend.fontsize':   base_pt,
             'keymap.fullscreen': [],
         })
+        # Theme the axes/ticks/labels/grid/legend from the live palette so the
+        # plot surface reads correctly in light and dark mode.
+        try:
+            plt.rcParams.update(matplotlib_rc_overrides(self._palette))
+        except Exception:
+            pass
 
     def _on_canvas_resize(self, event) -> None:
         self._resize_timer.start()  # restart on every event; fires 120ms after last one
@@ -978,15 +1519,51 @@ class plotWindow(QWidget, _PaneMixin, _CursorMixin, _FuncTraceMixin, _RenderMixi
         else:
             QtCore.QTimer.singleShot(50, self._init_splitter_sizes)
 
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        super().resizeEvent(event)
-        if self.parent():
-            self.parent().updateGeometry()
-
     def changeEvent(self, event: QtCore.QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QtCore.QEvent.Type.FontChange:
             self._em_cache = None
+            # sizeHint scales with _em (font height), so it only changes here.
+            # Notify the parent layout now instead of on every resizeEvent —
+            # the latter caused a resize<->updateGeometry feedback loop that
+            # blew the Python recursion limit inside the canvas sizeHint.
+            self.updateGeometry()
+        elif (event.type() == QtCore.QEvent.Type.PaletteChange
+              and not self._applying_theme):
+            # Live light/dark toggle (or a zoom change) while a plot is open:
+            # rebuild the palette and re-skin the chrome + matplotlib facecolors
+            # in place. Trace colors are data (VIBRANT_COLOR_PALETTE) and stay
+            # put; we avoid a full refresh_plot so the user's current view isn't
+            # reset. Guarded by _applying_theme: setStyleSheet() inside
+            # apply_theme fires its own PaletteChange, which must not re-enter.
+            #
+            # DEFERRED, never inline: this event is delivered from inside the
+            # app-wide repolish that QApplication.setStyleSheet() is running.
+            # Doing the work here re-entered Qt's style engine mid-walk (our
+            # own setStyleSheet + the nav toolbar's setPalette + a canvas
+            # redraw), which is the crash window -- see theme_utils.defer_restyle.
+            from frontEnd.theme_utils import defer_restyle
+            defer_restyle(self, self._retheme_on_palette_change)
+
+    def _retheme_on_palette_change(self) -> None:
+        """Deferred body of the PaletteChange branch of :meth:`changeEvent`.
+
+        Runs one event-loop tick after the app-wide repolish that triggered it,
+        so every widget it touches is guaranteed to still be alive and Qt is no
+        longer walking the widget tree.
+        """
+        try:
+            self._palette = current_palette(QtWidgets.QApplication.instance())
+            self._setup_matplotlib_style()
+            self.apply_theme()
+        except RuntimeError:
+            # Window torn down between the palette event and this tick.
+            pass
+        except Exception:
+            # Never let a re-theme failure escape into Qt's event dispatch
+            # (it would surface as an unhandled-exception dialog mid-toggle),
+            # but log it so future staleness isn't silent.
+            logger.exception("Plot re-theme on PaletteChange failed")
 
     def sizeHint(self) -> QtCore.QSize:
         em = self._em

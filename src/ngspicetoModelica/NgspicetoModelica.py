@@ -17,6 +17,18 @@ class NgMoConverter:
         self.subCktDetail = []
         self.deviceList = ['d', 'D', 'j', 'J', 'q', 'Q', 'm', 'M']
         self.sourceList = ['v', 'V', 'i', 'I']
+        # Parameters this converter could not map to a Modelica equivalent and
+        # therefore left out of the generated .mo. These used to be dropped by
+        # a bare ``except BaseException: pass``, so the output was silently
+        # incomplete. Collected here and surfaced by the UI after conversion.
+        self.skipped = []
+
+    def _record_skip(self, ref_name, param, err):
+        """Record a device/model parameter that could not be converted so the
+        caller can warn the user instead of shipping a silently-incomplete
+        model."""
+        self.skipped.append(
+            "%s.%s (%s)" % (ref_name, param, type(err).__name__))
 
     def readNetlist(self, filename):
         """
@@ -430,8 +442,8 @@ class NgMoConverter:
                             )
                             userDeviceParamList.append(
                                 str(actualModelicaParam))
-                        except BaseException:
-                            pass
+                        except Exception as _e:
+                            self._record_skip(refName, key, _e)
 
                     # Running loop over default parameter of OpenModelica
                     for default in (self.mappingData
@@ -511,8 +523,8 @@ class NgMoConverter:
                                 " ")
                             userDeviceParamList.append(
                                 str(actualModelicaParam))
-                    except BaseException:
-                        pass
+                    except Exception as _e:
+                        self._record_skip(refName, key, _e)
                 # Running loop over default parameter of OpenModelica
                 for default in (
                     self.mappingData
@@ -703,8 +715,8 @@ class NgMoConverter:
                                 modelInfo[refName][key]) +
                             " ")
                         userDeviceParamList.append(str(actualModelicaParam))
-                    except BaseException:
-                        pass
+                    except Exception as _e:
+                        self._record_skip(refName, key, _e)
                 # Running loop over default parameter of OpenModelica
                 for default in (
                     self.mappingData
@@ -786,8 +798,8 @@ class NgMoConverter:
                                 modelInfo[refName][key]) +
                             " ")
                         userModelParamList.append(str(actualModelicaParam))
-                    except BaseException:
-                        pass
+                    except Exception as _e:
+                        self._record_skip(refName, key, _e)
 
                 # Running loop over default parameter of OpenModelica
                 for default in (

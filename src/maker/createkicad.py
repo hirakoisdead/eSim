@@ -28,28 +28,32 @@
 # ==============================================================================
 
 from . import Appconfig
-import re
 import os
 import xml.etree.cElementTree as ET
 from PyQt6 import QtWidgets
+from configuration import Dialogs
+from .kicad_symlib import (
+    _balanced_end, _read_parts, _write_lib,
+    generated_symlib_path, ensure_lib_registered)
 
 
 class AutoSchematic:
     def init(self, modelname, modelpath):
         self.App_obj = Appconfig.Appconfig()
-        self.modelname = modelname.split('.')[0]
+        self.modelname = os.path.splitext(modelname)[0]
         self.template = self.App_obj.kicad_sym_template.copy()
         self.xml_loc = self.App_obj.xml_loc
         self.lib_loc = self.App_obj.lib_loc
         self.modelpath = modelpath
+        # eSim_Ngveri now lives in ~/.esim/kicad_symbols (see kicad_symlib);
+        # pass the old Windows install path as a legacy probe so existing
+        # Windows users' accumulated models migrate in on first use.
+        legacy = []
         if os.name == 'nt':
-            eSim_src = self.App_obj.src_home
-            inst_dir = eSim_src.replace('\\eSim', '')
-            self.kicad_ngveri_sym = \
-                inst_dir + '/KiCad/share/kicad/symbols/eSim_Ngveri.kicad_sym'
-        else:
-            self.kicad_ngveri_sym = \
-                '/usr/share/kicad/symbols/eSim_Ngveri.kicad_sym'
+            inst_dir = self.App_obj.src_home.replace('\\eSim', '')
+            legacy.append(inst_dir + '/KiCad/share/kicad/symbols')
+        self.kicad_ngveri_sym = generated_symlib_path(
+            "eSim_Ngveri", legacy_dirs=legacy)
         # self.parser = self.App_obj.parser_ngveri
 
     def createKicadSymbol(self):
@@ -67,10 +71,11 @@ class AutoSchematic:
             self.getPortInformation()
             self.createXML()
             self.createSym()
+            self._register_lib()
 
         elif (xmlFound == os.path.join(self.xml_loc, 'Ngveri')):
             print('Library already exists...')
-            ret = QtWidgets.QMessageBox.warning(
+            ret = Dialogs.warning(
                 None, "Warning", '''<b>Library files for this model''' +
                 ''' already exist. Do you want to overwrite it?</b><br/>
                 If yes press ok, else cancel it and ''' +
@@ -82,20 +87,53 @@ class AutoSchematic:
                 print("Overwriting existing libraries")
                 self.getPortInformation()
                 self.createXML()
-                self.removeOldLibrary()     # Removes the existing library
+                # No explicit removeOldLibrary() here: createSym() ->
+                # _commit_block() already replaces any existing block of this
+                # name idempotently, so pre-removing only rewrites the shared
+                # file twice (and widened the crash window it guards against).
                 self.createSym()
+                self._register_lib()
             else:
                 print("Library Creation Cancelled")
                 return "Error"
 
         else:
-            print('Pre-existing library...')
-            ret = QtWidgets.QMessageBox.critical(
-                self.parent, "Error", '''<b>A standard library already ''' +
-                '''exists with this name.</b><br/><b>Please change the ''' +
-                '''name of your verilog model and add it again.</b>''',
-                QtWidgets.QMessageBox.StandardButton.Ok
-            )
+            found = os.path.basename(os.path.normpath(xmlFound))
+            print('Pre-existing library in', found)
+            if found == 'NgVeriCosim':
+                # Same name currently a d_cosim block. One name = one backend,
+                # so offer to switch instead of erroring: drop the d_cosim
+                # version, then build the NgVeri code model. Latest wins.
+                ret = Dialogs.question(
+                    None, "Model already exists",
+                    "<b>'" + str(self.modelname) + "' already exists as a "
+                    "d_cosim block (Icarus Verilog).</b><br/>"
+                    "Switch it to an NgVeri Ngspice code model? "
+                    "The d_cosim version will be removed.",
+                    QtWidgets.QMessageBox.StandardButton.Ok |
+                    QtWidgets.QMessageBox.StandardButton.Cancel)
+                if ret != QtWidgets.QMessageBox.StandardButton.Ok:
+                    return "Error"
+                # Local import: createkicadCosim imports this module at load
+                # time, so a top-level import here would be circular.
+                from . import createkicadCosim
+                oldModel = createkicadCosim.CosimSchematic()
+                oldModel.init(self.modelname, self.modelpath)
+                oldModel.deleteKicadSymbol()
+                self.getPortInformation()
+                self.createXML()
+                self.createSym()
+                self._register_lib()
+                return "No Error"
+            # A built-in / NgHDL / standard library primitive — not ours to
+            # replace. The user must rename their module.
+            Dialogs.critical(
+                None, "Error",
+                "<b>A model named '" + str(self.modelname) + "' already "
+                "exists in the eSim '" + found + "' library.</b><br/>"
+                "Please rename your Verilog module/file and add it again.",
+                QtWidgets.QMessageBox.StandardButton.Ok)
+            return "Error"
 
     def getPortInformation(self):
         '''
@@ -111,15 +149,24 @@ class AutoSchematic:
         '''
             creating the XML files at `library/modelParamXML/Ngveri`
         '''
-        cwd = os.getcwd()
         xmlDestination = os.path.join(self.xml_loc, 'Ngveri')
         self.splitText = ""
+        # Empty port list would IndexError on portInfo[-1]; a model with no
+        # parsed ports is malformed, so bail cleanly (the NgVeri caller logs it)
+        # rather than crash mid-build.
+        if not self.portInfo:
+            raise ValueError(
+                "No ports parsed for '" + str(self.modelname) +
+                "' — check connection_info.txt")
         for bit in self.portInfo[:-1]:
             self.splitText += bit + "-V:"
         self.splitText += self.portInfo[-1] + "-V"
 
-        print("changing directory to ", xmlDestination)
-        os.chdir(xmlDestination)
+        # Absolute-path write, no os.chdir. modelParamXML lives in the install
+        # tree; on a read-only install the write raises, but without chdir it
+        # can no longer strand the process CWD inside the library folder (which
+        # silently corrupted every later relative-path operation this session).
+        os.makedirs(xmlDestination, exist_ok=True)
 
         root = ET.Element("model")
         ET.SubElement(root, "name").text = self.modelname
@@ -139,9 +186,7 @@ class AutoSchematic:
             "Enter Instance ID (Between 0-99)")
 
         tree = ET.ElementTree(root)
-        tree.write(str(self.modelname) + '.xml')
-        print("Leaving the directory ", xmlDestination)
-        os.chdir(cwd)
+        tree.write(os.path.join(xmlDestination, str(self.modelname) + '.xml'))
 
     def findBlockSize(self):
         '''
@@ -156,86 +201,95 @@ class AutoSchematic:
     def char_sum(self, ls):
         return sum([int(x) for x in ls])
 
+    def _register_lib(self):
+        '''
+            Register eSim_Ngveri in the user's KiCad sym-lib-table(s) pointing
+            at its ~/.esim path. Existing users' tables point this lib at the
+            stale ${KICAD6_SYMBOL_DIR} location after relocation, so rewrite it
+            in place; best-effort, never blocks model creation.
+        '''
+        ensure_lib_registered(
+            "eSim_Ngveri", self.kicad_ngveri_sym,
+            descr="eSim NgVeri (Ngspice code model) symbols")
+
     def removeOldLibrary(self):
         '''
-            removing the old library
+            Remove every block for this model name from the shared library and
+            rewrite a clean, balanced file. Parse-based, so it correctly strips
+            glued/duplicated blocks (which the old startswith() scan missed).
         '''
-        cwd = os.getcwd()
-        os.chdir(self.lib_loc)
-        print("Changing directory to ", self.lib_loc)
-        sym_file = open(self.kicad_ngveri_sym)
-        lines = sym_file.readlines()
-        sym_file.close()
-        lines = lines[0:-2]
-        output = []
-        line_reading_flag = False
+        parts = _read_parts(self.kicad_ngveri_sym)
+        parts.pop(self.modelname, None)
+        _write_lib(self.kicad_ngveri_sym, parts)
 
-        for line in lines:
-            if line.startswith("(symbol"):    # Eeschema Template start
-                if line.split()[1] == f"\"{self.modelname}\"":
-                    line_reading_flag = True
-            if not line_reading_flag:
-                output.append(line)
-            if line.startswith("))"):        # Eeschema Template end
-                line_reading_flag = False
+    def deleteKicadSymbol(self):
+        '''
+            Public entry point for the NgVeri "Remove Verilog Models" feature:
+            drop this model's symbol from eSim_Ngveri.kicad_sym AND delete the
+            orphan param XML the build left at
+            library/modelParamXML/Ngveri/<name>.xml (previously left behind, so
+            a re-add saw a stale "Library already exists" and re-used old port
+            data). Idempotent and safe to call when either is already absent.
+        '''
+        self.removeOldLibrary()
+        xml = os.path.join(self.xml_loc, 'Ngveri', self.modelname + '.xml')
+        try:
+            os.remove(xml)
+        except FileNotFoundError:
+            pass
 
-        sym_file = open(self.kicad_ngveri_sym, 'w')
-        for line in output:
-            sym_file.write(line)
-
-        os.chdir(cwd)
-        print("Leaving directory, ", self.lib_loc)
+    def _commit_block(self, block):
+        '''
+            Idempotently insert/overwrite this model's symbol block in the
+            shared library, then re-serialize a valid balanced file. The block
+            is verified to be a single balanced s-expression first, so a
+            malformed block is rejected instead of poisoning the shared file.
+        '''
+        block = block.strip()
+        if _balanced_end(block, 0) != len(block):
+            raise ValueError(
+                "Refusing to write malformed symbol block for '" +
+                str(self.modelname) + "': not a single balanced s-expression")
+        parts = _read_parts(self.kicad_ngveri_sym)
+        parts[self.modelname] = block
+        _write_lib(self.kicad_ngveri_sym, parts)
 
     def createSym(self):
         '''
-            creating the symbol
-            (pins snapped to KiCad-6 grid)
+            Build this model's KiCad symbol block (pins snapped to the KiCad-6
+            grid) and commit it idempotently to the shared library. The block
+            is assembled as a balanced string and handed to _commit_block(),
+            which replaces any existing block of the same name and
+            re-serializes a valid file — no raw byte/line surgery, so the
+            library can never be left glued or unbalanced.
         '''
-        self.grid = 0.635
-        self.dist_port = 4 * self.grid         # Distance between two ports # 100 mil (= 2.54 mm)
+        # Rounding quantum for every coordinate written below. It must be the
+        # KiCad placement grid itself (100 mil = 2.54 mm): a smaller quantum
+        # (it used to be 0.635 = 25 mil) lets pins settle on half-grid points
+        # that no schematic grid ever hits, so wires cannot be attached to them.
+        self.grid = 2.54
+        self.dist_port = self.grid          # Distance between two ports # 100 mil (= 2.54 mm)
         self.inc_size = self.dist_port      # Increment size of a block (mil)
         def snap(val):
                 snapped = round(float(val) / self.grid) * self.grid
                 return f"{snapped:.3f}"
-        cwd = os.getcwd()
-        os.chdir(self.lib_loc)
-        print("Changing directory to ", self.lib_loc)
 
-        # Removing ")" from "eSim_Ngveri.kicad_sym"
-        file = open(self.kicad_ngveri_sym, "r")
-        content_file = file.read()
-        new_content_file = content_file[:-2]
-        file.close()
-        file = open(self.kicad_ngveri_sym, "w")
-        file.write(new_content_file)
-        file.close()
+        block = []                          # lines of this one (symbol ...)
 
-        # Appending new schematic block
-        sym_file = open(self.kicad_ngveri_sym, "a")
         line1 = self.template["start_def"]
         line1 = line1.split()
         line1 = [w.replace('comp_name', self.modelname) for w in line1]
         self.template["start_def"] = ' '.join(line1)
 
-        if os.stat(self.kicad_ngveri_sym).st_size == 0:
-            sym_file.write(
-                "(kicad_symbol_lib (version 20211014) " +
-                "(generator kicad_symbol_editor)" +
-                "\n\n"
-            )                       # Eeschema starter code
-
-        # sym_file.write("#encoding utf-8"+ "\n"+ "#"+ "\n" +
-        # "#test_compo" + "\n"+ "#"+ "\n")
-        sym_file.write(
-            self.template["start_def"] + "\n" + self.template["U_field"] + "\n"
-        )
+        block.append(self.template["start_def"])
+        block.append(self.template["U_field"])
 
         line3 = self.template["comp_name_field"]
         line3 = line3.split()
         line3 = [w.replace('comp_name', self.modelname) for w in line3]
         self.template["comp_name_field"] = ' '.join(line3)
 
-        sym_file.write(self.template["comp_name_field"] + "\n")
+        block.append(self.template["comp_name_field"])
 
         line4 = self.template["blank_field"]
         line4_1 = line4[0]
@@ -248,22 +302,27 @@ class AutoSchematic:
         line4[1] = ' '.join(line4_2)
         self.template["blank_qoutes"] = line4
 
-        sym_file.write(line4[0] + "\n" + line4[1] + "\n")
+        block.append(line4[0])
+        block.append(line4[1])
 
         draw_pos = self.template["draw_pos"]
         draw_pos = draw_pos.split()
 
         draw_pos = \
             [w.replace('comp_name', f"{self.modelname}_0_1") for w in draw_pos]
+        # Body width (7) and height (8) are snapped too, so the body edges land
+        # on the grid and the pin roots meet them exactly instead of overshoot-
+        # ing the outline by a fraction of a mm.
+        draw_pos[7] = snap(draw_pos[7])
         draw_pos[8] = snap(float(draw_pos[8]) +           # previously it is (-)
                           float(self.findBlockSize() * self.inc_size))
         draw_pos_rec = draw_pos[8]
 
         self.template["draw_pos"] = ' '.join(draw_pos)
 
-        sym_file.write(
-            self.template["draw_pos"] + "\n" + self.template["start_draw"] +
-            " \"" + f"{self.modelname}_1_1\"" + "\n"
+        block.append(self.template["draw_pos"])
+        block.append(
+            self.template["start_draw"] + " \"" + f"{self.modelname}_1_1\""
         )
 
         input_port = self.template["input_port"]
@@ -319,12 +378,10 @@ class AutoSchematic:
                 port_list.append(output_list)
 
         for ports in port_list:
-            sym_file.write(ports + "\n")
-        sym_file.write(
-            self.template["end_draw"] + "\n\n\n"+")"
-        )
-        sym_file.close()
-        os.chdir(cwd)
+            block.append(ports)
+        block.append(self.template["end_draw"])      # "))" closes _1_1 + part
+
+        self._commit_block('\n'.join(block))
 
 
 class PortInfo:
@@ -344,31 +401,30 @@ class PortInfo:
         '''
         input_list = []
         output_list = []
-        read_file = open(self.modelpath + 'connection_info.txt', 'r')
-        data = read_file.readlines()
-        # print(data)
-        read_file.close()
+        info_path = self.modelpath + 'connection_info.txt'
+        try:
+            with open(info_path, 'r') as read_file:
+                data = read_file.readlines()
+        except OSError as e:
+            raise ValueError(
+                "Cannot read connection_info.txt for '" +
+                str(self.modelname) + "': " + str(e)) from e
 
+        # Classify on the direction FIELD, not a substring search of the whole
+        # line (see ModelGeneration.getPortInfo): a port whose name contains a
+        # direction keyword — e.g. "output_valid" — was otherwise counted in
+        # both lists, corrupting the KiCad symbol pin count. A line with < 3
+        # fields (blank or malformed) is skipped, which also fixes the old
+        # UnboundLocalError on a leading blank line.
         for line in data:
-            if re.match(r'^\s*$', line):
-                pass
-            else:
-                in_items = re.findall(
-                    "INPUT", line, re.MULTILINE | re.IGNORECASE
-                )
-                inout_items = re.findall(
-                    "INOUT", line, re.MULTILINE | re.IGNORECASE
-                )
-
-                out_items = re.findall(
-                    "OUTPUT", line, re.MULTILINE | re.IGNORECASE
-                )
-            if in_items:
-                input_list.append(line.split())
-            if inout_items:
-                input_list.append(line.split())
-            if out_items:
-                output_list.append(line.split())
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            direction = parts[1].lower()
+            if direction in ("input", "inout"):
+                input_list.append(parts)
+            elif direction == "output":
+                output_list.append(parts)
 
         for in_list in input_list:
             self.bit_list.append(in_list[2])

@@ -1,124 +1,129 @@
-# By Sai Charan Lanka (@saicharan0112) : Nov 12, 2022
-# This is the workflow to pack the eSim for Ubuntu OS which follows the steps shown in the installer branch and release the zip file which can be uploaded onto the website
-# Note: 
-# 1. Make sure the eSim manual for the version about to release, already exists in the https://static.fossee.in/esim/manuals/ location. Else the release fails.
-# 2. To trigger this workflow, create and push tags that start with "v".
-# For more info, refer to PR#230 and Issue#211
-
+# Build the Ubuntu release zip and publish it to GitHub Releases.
+#
+# Originally by Sai Charan Lanka (@saicharan0112), Nov 12 2022 (PR#230, Issue#211).
+# Rewritten for the unified installer: it used to assemble a release by checking
+# out FOSSEE/eSim@master plus FOSSEE/nghdl and pulling install-eSim.sh off the
+# `installers` branch, which predates Ubuntu/install-eSim.sh and the embedded
+# nghdl/ tree — and built upstream's code instead of the tagged commit.
+#
+# Trigger: push a tag starting with "v" (v2.5, v2.6, ...), or run it by hand from
+# the Actions tab (workflow_dispatch) to get a zip without cutting a release.
+#
+# The zip is built by ./make-release.sh from the tagged commit — the same script
+# maintainers run locally, so CI is not a second recipe that can drift. What goes
+# in it is decided by .gitattributes (export-ignore), and the curl one-liner in
+# Ubuntu/bootstrap.sh downloads GitHub's tarball of that same commit, which
+# GitHub filters by those same rules. Zip and curl ship an identical file set.
 
 name: Auto release of eSim for Ubuntu OS
 
 on:
   push:
     tags:
-      - 'v*' # Push events to matching v*, i.e. v2.2, v2.3 etc
+      - 'v*'
+      # v2.6-win marks which commit a Windows installer was built from; the
+      # exe is uploaded by hand. Without this exclusion the tag push mints a
+      # spurious "eSim vX.Y-win" release carrying only the Ubuntu zip.
+      - '!v*-win'
+  workflow_dispatch:
 
+permissions:
+  contents: write        # create the Release and upload its assets
 
 jobs:
   release_eSim:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
 
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y zip xz-utils
 
-# Create eSim release directory
-      - name: Preparing eSim for release
-        run: mkdir /home/runner/work/eSim_release
+      - name: Read release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: release_version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          packaged_version="$(tr -d '\r\n' < VERSION)"
+          if [ "$version" != "$packaged_version" ]; then
+            echo "::error::Release tag must match VERSION ($packaged_version)."
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
+      - name: Build the release zip
+        run: |
+          chmod +x make-release.sh
+          ./make-release.sh
+          ls -lh dist/
 
-# Steps to prepare nghld.zip 
-      - name: Preparing nghdl for release
-        run: mkdir /home/runner/work/nghdl_release
+      # Fail loudly rather than publish a release that quietly carries the
+      # developer tree. These are exactly what .gitattributes is meant to drop,
+      # so a regression here means someone broke the export-ignore rules.
+      - name: Verify the zip is a user build, not a dev tree
+        run: |
+          zip="$(ls dist/eSim-*-ubuntu.zip)"
+          for junk in PACKAGING.md MAINTAINERS-PACKAGING.md CONTRIBUTION.md \
+                      setup.py requirements.txt conf.py; do
+            unzip -l "$zip" | grep -qE "/$junk\$" \
+              && { echo "::error::$junk leaked into $zip"; exit 1; }
+          done
+          for junk in windows code docs scripts; do
+            unzip -l "$zip" | grep -qE "/$junk/" \
+              && { echo "::error::$junk/ leaked into $zip"; exit 1; }
+          done
+          unzip -l "$zip" | grep -qE '\.raw$|plot_data_.*\.txt$' \
+            && { echo "::error::regeneratable ngspice output leaked into $zip"; exit 1; }
+          # ...and that it is still installable.
+          for need in install-eSim.sh VERSION nghdl.zip; do
+            unzip -l "$zip" | grep -qE "/$need\$" \
+              || { echo "::error::$need missing from $zip"; exit 1; }
+          done
+          # patches/ngspice IS shipped, and this is the check that says so.
+          # install-nghdl.sh applies every patches/ngspice/*.patch to the
+          # extracted simulator tree (apply_esim_patches), and it does that
+          # from the release tree, not from git -- but it skips silently when
+          # the directory is absent. So an empty patches/ here does not fail
+          # the install, it ships a simulator missing the d_cosim
+          # operating-point fix. Fail the release instead.
+          unzip -l "$zip" | grep -qE "/patches/ngspice/.+\.patch\$" \
+            || { echo "::error::patches/ngspice/*.patch missing from $zip -- the simulator would ship unpatched"; exit 1; }
+          echo "OK: $zip is clean and complete"
 
-      - name: Checkout FOSSEE/nghdl installers branch
-        uses: actions/checkout@v3
+      - name: Publish the Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          repository: FOSSEE/nghdl
-          ref: installers
-      
-      - name: Get required data from the nghld/installers branch
-        run: |
-          cp Ubuntu/ghdl-*.tar.xz /home/runner/work/nghdl_release/.
-          cp Ubuntu/verilator-*.tar.xz /home/runner/work/nghdl_release/.
-          cp Ubuntu/install-nghdl.sh /home/runner/work/nghdl_release/.
+          name: eSim-${{ steps.release_version.outputs.version }}
+          files: |
+            dist/eSim-*-ubuntu.zip
+            dist/eSim-*-ubuntu.zip.sha256
+          body: |
+            ## Ubuntu
 
-      - name: Checkout FOSSEE/nghdl installers branch
-        uses: actions/checkout@v3
+            Supported: Ubuntu 24.04 / 25.04 / 26.04 (64-bit).
+
+            **Install with one line** (nothing to download by hand):
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/Ubuntu/bootstrap.sh | ESIM_BRANCH=${{ github.ref_name }} bash
+            ```
+
+            Keep `ESIM_BRANCH` set to `${{ github.ref_name }}` to install this release.
+
+            **Or grab the zip below**, then:
+
+            ```
+            unzip eSim-*-ubuntu.zip && cd eSim-*/ && ./install-eSim.sh --install
+            ```
+
+            To remove it again: `./install-eSim.sh --uninstall`
+
+      # Manual run (no tag): keep the zip as a downloadable build artifact.
+      - name: Upload the zip as a build artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
         with:
-          repository: FOSSEE/nghdl
-          ref: master
-
-      - name: Get required data from the nghld/master branch
-        run: |
-          cp -rf ./* /home/runner/work/nghdl_release/.
-          cd /home/runner/work
-          rm -rf nghdl_release/.git* nghdl_release/*.md 
-
-      - name: Compress the nghdl folder and copy it to eSim release folder
-        run: |
-          zip -r nghld.zip . -i nghdl_release/.
-          cp nghld.zip /home/runner/work/eSim_release/.
-          tree /home/runner/work/
-
-
-# Steps to prepare eSim release directory
-      - name: Checkout FOSSEE/eSim master branch
-        uses: actions/checkout@v3
-        with:
-          repository: FOSSEE/eSim
-          ref: master
-
-      - name: Compress the library/kicadLibrary folder
-        run: |
-          tar cfJ kicadLibrary.tar.xz library/kicadLibrary/.
-          cp kicadLibrary.tar.xz /home/runner/work/eSim_release/.
-
-      - name: Copy all the data from eSim/master to eSim_release and delete specific data
-        run: |
-          rm -rf .git* code library/browser/User-Manual/figures
-          rm conf.py setup.py index.rst requirements.txt .travis.yml library/browser/User-Manual/eSim.html
-          cp -rf ./* /home/runner/work/eSim_release/.
-
-      - name: Checkout FOSSEE/eSim installers branch
-        uses: actions/checkout@v3
-        with:
-          repository: FOSSEE/eSim
-          ref: installers
-
-      - name: Copy install-eSim.sh script to the release directory
-        run: |
-          cp Ubuntu/install-eSim.sh /home/runner/work/eSim_release/.
-
-      # extract the number from the tag to pull the relevant manual from the website
-      - name: Copy eSim manual which is available at https://static.fossee.in/esim/manuals/
-        run: |
-          VERSION=$(echo $GITHUB_REF_NAME | cut -d 'v' -f 2)
-          wget https://static.fossee.in/esim/manuals/eSim_Manual_$VERSION.pdf
-
-      - name: Zip the eSim_release folder
-        run: |
-          cd /home/runner/work/
-          zip -r eSim-$VERSION.zip eSim_release/
-
-
-# Create a release and upload artifact
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: eSim-$VERSION
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Asset
-        id: upload-release-asset 
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-          asset_path: /home/runner/work/eSim-$VERSION.zip
-          asset_name: eSim-$VERSION.zip
-          asset_content_type: application/zip
+          name: eSim-ubuntu-zip
+          path: dist/eSim-*-ubuntu.zip*

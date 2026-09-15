@@ -18,9 +18,11 @@
 
 from PyQt6 import QtWidgets
 from .Validation import Validation
+from .projectPaths import canonical_path, save_project_explorer
 from configuration.Appconfig import Appconfig
+from configuration import Dialogs
 import os
-import json
+import shutil
 
 
 class NewProjectInfo(QtWidgets.QWidget):
@@ -78,73 +80,70 @@ class NewProjectInfo(QtWidgets.QWidget):
 
         # Checking Validations Response
         if self.reply == "VALID":
-            # create project directory
+            newprojlist = [self.projName + '.proj']
+            # Canonicalise the folder to its identity key (see
+            # projectPaths.canonical_path) before it becomes the
+            # project_explorer/current_project key, so a project is registered
+            # under one form -- matching what openProject and the project tree
+            # compare against.
+            canonicalDir = canonical_path(self.projDir)
+
+            # One guarded region over EVERY disk/registry write: the .proj write
+            # and the registry save used to sit OUTSIDE the try, so a disk-full
+            # or a workspace turning read-only between the probe and the write
+            # raised a raw excepthook dialog and left a half-created project on
+            # disk. Anything that fails now rolls the whole thing back.
             try:
                 os.mkdir(self.projDir)
-                self.close()
                 self.projFile = os.path.join(
                     self.projDir, self.projName + ".proj")
-                f = open(self.projFile, "w")
+                # New KiCad v6 file extension
+                with open(self.projFile, "w") as f:
+                    f.write("schematicFile " + self.projName + ".kicad_sch\n")
 
-            except BaseException:
-                self.msg = QtWidgets.QErrorMessage(self)
-                self.msg.setModal(True)
-                self.msg.setWindowTitle("Error Message")
-                self.msg.showMessage(
+                self.obj_appconfig.project_explorer[canonicalDir] = newprojlist
+                save_project_explorer(
+                    self.obj_appconfig.dictPath["path"],
+                    self.obj_appconfig.project_explorer)
+            except Exception:
+                # Leave the workspace exactly as it was: drop the folder (and any
+                # empty .proj) and the in-memory entry, and do NOT switch to it.
+                shutil.rmtree(self.projDir, ignore_errors=True)
+                self.obj_appconfig.project_explorer.pop(canonicalDir, None)
+                Dialogs.critical(
+                    self, "Error Message",
                     'Unable to create project. Please make sure you have ' +
-                    'write permission on ' + self.workspace
-                )
-                self.msg.exec()
+                    'write permission on ' + self.workspace)
                 return None, None
 
-            # New KiCad v6 file extension
-            f.write("schematicFile " + self.projName + ".kicad_sch\n")
-            f.close()
-
-            # Now Change the current working project
-            newprojlist = []
-            # self.obj_appconfig = Appconfig()
+            # Committed on disk + in the registry: only now switch to it.
+            self.projDir = canonicalDir
             self.obj_appconfig.current_project['ProjectName'] = self.projDir
-            newprojlist.append(self.projName + '.proj')
-            self.obj_appconfig.project_explorer[self.projDir] = newprojlist
+            self.close()
 
             self.obj_appconfig.print_info(
                 'New project created : ' + self.projName)
             self.obj_appconfig.print_info(
                 'Current project is : ' + self.projDir)
-
-            json.dump(
-                self.obj_appconfig.project_explorer, open(
-                    self.obj_appconfig.dictPath["path"], 'w'))
             return self.projDir, newprojlist
 
         elif self.reply == "CHECKEXIST":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
+            Dialogs.critical(
+                self, "Error Message",
                 'The project "' + self.projName +
                 '" already exist.Please select the different name or delete' +
-                ' existing project'
-            )
-            self.msg.exec()
+                ' existing project')
             return None, None
 
         elif self.reply == "CHECKNAME":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
+            Dialogs.critical(
+                self, "Error Message",
                 'The project name should not contain space between them')
-            self.msg.exec()
             return None, None
 
         elif self.reply == "NONE":
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage('The project name cannot be empty')
-            self.msg.exec()
+            Dialogs.critical(
+                self, "Error Message", 'The project name cannot be empty')
             return None, None
 
     def cancelProject(self):

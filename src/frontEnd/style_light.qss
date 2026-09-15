@@ -1,0 +1,1803 @@
+* {
+    outline: 0;
+}
+
+QMainWindow,
+QDialog {
+    background-color: #F3F7FC;
+}
+
+QWidget {
+    font-family: "Ubuntu", "Segoe UI Variable", "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 14px;
+    color: #142033;
+}
+
+QFrame,
+QWidget#verilogRoot {
+    background-color: #F3F7FC;
+}
+
+/* ── Status Bar ──────────────────────────────────────────────────── */
+QStatusBar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FFFFFF, stop:0.5 #FAFCFE, stop:1 #F8FBFF);
+    color: #6B7F99;
+    border-top: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.12), stop:0.5 rgba(109,93,246,0.08), stop:1 rgba(0,119,168,0.12));
+    padding: 4px 10px;
+}
+
+QStatusBar QLabel {
+    color: #6B7F99;
+    padding: 0 8px;
+}
+
+/* ── Menu Bar ────────────────────────────────────────────────────── */
+QMenuBar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FFFFFF, stop:0.4 #FBFDFF, stop:1 #F8FBFF);
+    color: #405168;
+    border-bottom: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.16), stop:0.5 rgba(109,93,246,0.10), stop:1 rgba(0,119,168,0.16));
+    padding: 4px 8px;
+}
+
+QMenuBar::item {
+    background: transparent;
+    color: #405168;
+    padding: 7px 13px;
+    margin: 1px 2px;
+    border-radius: 9px;
+}
+
+QMenuBar::item:selected,
+QMenuBar::item:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.16), stop:1 rgba(109,93,246,0.10));
+    color: #0077A8;
+    border-bottom: 2px solid #0077A8;
+    padding-bottom: 5px;
+}
+
+/* ── Menus ───────────────────────────────────────────────────────── */
+QMenu {
+    /* Fully opaque body: the menu uses WA_TranslucentBackground so the area
+       OUTSIDE the border-radius is transparent (no black corners). Keep the
+       body itself solid so nothing bleeds through behind the items. */
+    background: #FFFFFF;
+    color: #142033;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.22), stop:0.5 rgba(109,93,246,0.12), stop:1 rgba(0,119,168,0.22));
+    border-radius: 14px;
+    padding: 8px;
+}
+
+QMenu::item {
+    padding: 9px 34px 9px 14px;
+    margin: 1px 0;
+    border-radius: 9px;
+}
+
+QMenu::item:selected {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.22), stop:0.6 rgba(0,119,168,0.14), stop:1 rgba(109,93,246,0.14));
+    color: #0077A8;
+}
+
+QMenu::item:disabled { color: #9AAABE; }
+
+QMenu::separator {
+    height: 1px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 transparent, stop:0.3 rgba(0,119,168,0.10), stop:0.7 rgba(0,119,168,0.10), stop:1 transparent);
+    margin: 7px 10px;
+}
+
+/* ── Tooltips ────────────────────────────────────────────────────── */
+QToolTip {
+    background: rgba(20,32,51,0.97);
+    color: #F8FBFF;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.30), stop:1 rgba(109,93,246,0.18));
+    border-radius: 12px;
+    padding: 8px 13px;
+    font-size: 13px;
+}
+
+/* ── Top Toolbar (glassmorphism) ─────────────────────────────────── */
+QToolBar#topToolbar {
+    /* Solid + OPAQUE (same colour as the left rail) so the two toolbars blend
+       into one inverted-L and the rail can paint over this bar's corner shadow.
+       No bottom border — it drew a hard seam line across the rail's top. */
+    background: #FFFFFF;
+    border: none;
+    spacing: 7px;
+    padding: 9px 13px;
+}
+
+QToolBar#topToolbar QToolButton,
+QToolBar#leftToolBar QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 7px;
+    margin: 1px;
+    color: #405168;
+}
+
+QToolBar#topToolbar QToolButton:hover,
+QToolBar#leftToolBar QToolButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    border-color: rgba(0,119,168,0.32);
+    color: #142033;
+}
+
+QToolBar#topToolbar QToolButton:pressed,
+QToolBar#topToolbar QToolButton:checked,
+QToolBar#leftToolBar QToolButton:pressed,
+QToolBar#leftToolBar QToolButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.20), stop:1 rgba(109,93,246,0.12));
+    border-color: #0077A8;
+    color: #0077A8;
+}
+
+QToolBar#topToolbar::separator,
+QToolBar#leftToolBar::separator {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 transparent, stop:0.2 rgba(0,119,168,0.12), stop:0.8 rgba(0,119,168,0.12), stop:1 transparent);
+    width: 1px;
+    height: 1px;
+    margin: 7px 8px;
+}
+
+/* ── View controls: zoom pill + theme toggle ─────────────────────────
+   Sized to sit level with the left-rail icon buttons so they're easy to
+   find and hit, instead of reading as afterthoughts next to the logo. */
+QWidget#zoomPill {
+    background: rgba(255,255,255,0.82);
+    border: 1px solid rgba(0,119,168,0.16);
+    border-radius: 11px;
+}
+
+/* Scoped under #zoomPill so these out-specify the generic
+   `QToolBar#topToolbar QToolButton` rule above, which would otherwise win on
+   specificity and impose its 7px padding / 12px radius on the pill's guts. */
+QWidget#zoomPill QToolButton[cssClass="toolbarZoom"] {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #405168;
+    min-width: 26px;
+    padding: 5px 10px;
+    margin: 0px;
+    font-size: 16px;
+    font-weight: 800;
+}
+
+QWidget#zoomPill QToolButton[cssClass="toolbarZoom"]:hover {
+    background: rgba(0,119,168,0.10);
+    border-color: transparent;
+    color: #0077A8;
+}
+
+QWidget#zoomPill QToolButton[cssClass="toolbarZoom"]:pressed {
+    background: rgba(0,119,168,0.18);
+    border-color: transparent;
+    color: #0077A8;
+}
+
+QLabel#zoomLabel {
+    color: #405168;
+    font-size: 14px;
+    font-weight: 700;
+    background: transparent;
+}
+
+/* Brand logo. Its pixmap height comes from _apply_view_control_metrics() so it
+   is exactly one toolbar icon button tall at every zoom; only the padding
+   lives here, where build_qss() can scale it along with every other metric.
+   It was previously an inline setStyleSheet(), which the zoom scaler cannot
+   reach. */
+QLabel#brandLogo {
+    padding: 0 15px 0 6px;
+    background: transparent;
+}
+
+/* The box size and icon size come from _apply_view_control_metrics() so the
+   toggle is exactly one top-toolbar icon button tall at every zoom level;
+   this rule only paints it. Scoped under the toolbar to out-specify the
+   generic `QToolBar#topToolbar QToolButton` rule. */
+QToolBar#topToolbar QToolButton#themeToggleBtn {
+    background: rgba(255,255,255,0.82);
+    border: 1px solid rgba(0,119,168,0.16);
+    border-radius: 11px;
+    color: #405168;
+    padding: 0px;
+    margin: 0px;
+}
+
+QToolBar#topToolbar QToolButton#themeToggleBtn:hover {
+    background: rgba(0,119,168,0.10);
+    border-color: rgba(0,119,168,0.30);
+    color: #0077A8;
+}
+
+QToolBar#topToolbar QToolButton#themeToggleBtn:pressed {
+    background: rgba(0,119,168,0.18);
+    border-color: #0077A8;
+    color: #0077A8;
+}
+
+/* ── Left Toolbar ────────────────────────────────────────────────── */
+QToolBar#leftToolBar {
+    /* Same solid OPAQUE colour as the top toolbar so they blend into one
+       inverted-L; opaque so it covers the top bar's downward corner shadow. */
+    background: #FFFFFF;
+    border: none;
+    border-right: 1px solid qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(0,119,168,0.14), stop:0.5 rgba(109,93,246,0.08), stop:1 rgba(0,119,168,0.14));
+    spacing: 8px;
+    padding: 13px 8px;
+}
+
+QLabel[cssClass="railCaption"] {
+    color: #9AAABE;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+    padding: 6px 0 2px 0;
+    background: transparent;
+}
+
+QLabel#simStatusDot {
+    padding: 0 6px;
+}
+
+/* ── Push Buttons ─────────────────────────────────────────────────────
+   Hierarchy — only ONE bold button per view:
+     • default QPushButton ......... NEUTRAL workhorse (clean white card)
+     • :default / cssClass=primary . ACCENT call-to-action (auto on a dialog's
+                                     default/Enter button; opt-in elsewhere)
+     • cssClass=secondary .......... ghost / outline
+     • cssClass=tertiary ........... text-only
+     • cssClass=danger ............. destructive
+   The old dark-blue gradient is no longer the default — it is now reserved
+   for the single primary action, so screens read clean and calm. */
+
+/* Neutral — the default for every button unless promoted */
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FFFFFF, stop:1 #F4F8FD);
+    color: #233247;
+    border: 1px solid #D2DEEC;
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-weight: 600;
+    font-size: 14px;
+    min-height: 32px;
+    min-width: 72px;
+}
+
+QPushButton:hover {
+    background: #F0F6FC;
+    border-color: rgba(0,119,168,0.45);
+    color: #0E2233;
+}
+
+QPushButton:pressed {
+    background: #E6EFF7;
+    border-color: rgba(0,119,168,0.34);
+    padding-top: 9px;
+    padding-bottom: 7px;
+}
+
+QPushButton:focus {
+    border-color: #0077A8;
+}
+
+QPushButton:disabled {
+    background: #EEF2F7;
+    color: #9AAABE;
+    border-color: #E0E7F0;
+    font-style: italic;
+}
+
+/* Primary accent CTA — auto-applied to a dialog's default button, opt-in
+   elsewhere via cssClass="primary". Tight 2-stop fill, one calm accent. */
+QPushButton:default,
+QPushButton[cssClass="primary"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #0094CE, stop:1 #0077A8);
+    color: #FFFFFF;
+    border: 1px solid rgba(0,119,168,0.45);
+    font-weight: 700;
+    font-style: normal;
+}
+
+QPushButton:default:hover,
+QPushButton[cssClass="primary"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #00A4DC, stop:1 #0086BE);
+    border-color: #00A4DC;
+}
+
+QPushButton:default:pressed,
+QPushButton[cssClass="primary"]:pressed {
+    background: #005E86;
+    padding-top: 9px;
+    padding-bottom: 7px;
+}
+
+QPushButton:default:focus,
+QPushButton[cssClass="primary"]:focus {
+    border: 1px solid #00A4DC;
+}
+
+QPushButton:default:disabled,
+QPushButton[cssClass="primary"]:disabled {
+    background: #E7EDF4;
+    color: #9AAABE;
+    border-color: #D6E1EE;
+}
+
+/* ── Secondary button ────────────────────────────────────────────── */
+QPushButton[cssClass="secondary"] {
+    background: rgba(255,255,255,0.86);
+    color: #0077A8;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.18), stop:1 rgba(109,93,246,0.10));
+}
+
+QPushButton[cssClass="secondary"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.07), stop:1 rgba(109,93,246,0.04));
+    border-color: rgba(0,119,168,0.48);
+    color: #005E86;
+}
+
+QPushButton[cssClass="secondary"]:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+}
+
+/* ── Tertiary button ─────────────────────────────────────────────── */
+QPushButton[cssClass="tertiary"] {
+    background: transparent;
+    color: #0077A8;
+    border: 1px solid transparent;
+    padding: 6px 12px;
+    min-width: 0;
+}
+
+QPushButton[cssClass="tertiary"]:hover {
+    background: rgba(0,119,168,0.06);
+    color: #005E86;
+    border-color: rgba(0,119,168,0.18);
+}
+
+/* ── Danger button ───────────────────────────────────────────────── */
+QPushButton[cssClass="danger"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #F43F5E, stop:1 #E11D48);
+    color: #FFFFFF;
+    border-color: rgba(225,29,72,0.26);
+}
+
+QPushButton[cssClass="danger"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FB7185, stop:1 #F43F5E);
+}
+
+QPushButton[cssClass="danger"]:pressed {
+    background: #BE123C;
+    padding-top: 10px;
+    padding-bottom: 6px;
+}
+
+/* ── Verifier Primary ────────────────────────────────────────────── */
+QPushButton[cssClass="verifierPrimary"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #34D399, stop:1 #059669);
+    color: #FFFFFF;
+    border-color: rgba(5,150,105,0.28);
+}
+
+QPushButton[cssClass="verifierPrimary"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #6EE7B7, stop:1 #10B981);
+}
+
+QPushButton[cssClass="verifierPrimary"]:pressed {
+    background: #047857;
+    padding-top: 10px;
+    padding-bottom: 6px;
+}
+
+QPushButton[cssClass="verifierPrimary"]:disabled {
+    background: #E7EDF4;
+    color: #9AAABE;
+}
+
+QPushButton[cssClass="verifierPrimary"]:focus {
+    border: 1px solid #059669;
+}
+
+/* ── Icon button ─────────────────────────────────────────────────── */
+QPushButton[cssClass="icon"] {
+    background: transparent;
+    color: #6B7F99;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0;
+}
+
+QPushButton[cssClass="icon"]:hover {
+    background: rgba(0,119,168,0.07);
+    color: #0077A8;
+}
+
+QPushButton[cssClass="icon"]:pressed {
+    background: rgba(0,119,168,0.12);
+}
+
+QPushButton[cssClass="icon"]:disabled {
+    color: #9AAABE;
+    background: transparent;
+}
+
+/* ── Labeled Icon button ─────────────────────────────────────────── */
+QPushButton[cssClass="labeledIcon"] {
+    background: transparent;
+    color: #405168;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    min-height: 30px;
+    max-height: 32px;
+    padding: 0 12px;
+}
+
+QPushButton[cssClass="labeledIcon"]:hover {
+    background: rgba(0,119,168,0.06);
+    color: #0077A8;
+    border-color: rgba(0,119,168,0.20);
+}
+
+QPushButton[cssClass="labeledIcon"]:pressed {
+    background: rgba(0,119,168,0.10);
+}
+
+QPushButton[cssClass="labeledIcon"]:disabled {
+    color: #9AAABE;
+    background: transparent;
+}
+
+/* ── Tab Widget ──────────────────────────────────────────────────── */
+QTabWidget::pane {
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    background: #F8FBFF;
+    border-radius: 14px;
+    margin-top: -1px;
+}
+
+/* Verifier editor pane: rounded white card with inset padding so the
+   QScintilla's square viewport doesn't clip the bottom corners. Top stays
+   flush to butt the tabs. Scoped so console/prefs tabs keep zero inset. */
+/* Connected tabs: the pane is the editor card. Square TOP corners so the tab
+   row sits flush; rounded bottom. margin-top:-1px laps the tab bar so the
+   selected tab (same bg, no bottom border) melts into the card. Top padding
+   insets the code; the pane bg == QScintilla paper (#FFFFFF), so it reads as a
+   clean margin, not a frame. */
+QTabWidget#verilogEditorTabs::pane {
+    background: #FFFFFF;
+    border: 1px solid #D3E0EE;
+    border-radius: 0px;
+    margin-top: -1px;
+    padding: 12px 10px 10px 10px;
+}
+
+QTabBar {
+    background: transparent;
+}
+
+QTabBar::tab {
+    background: #EBF1F9;
+    border: 1px solid #D3E0EE;
+    border-bottom: none;
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    color: #6B7F99;
+    font-weight: 700;
+    min-height: 18px;
+}
+
+QTabBar::tab:hover:!selected {
+    background: #DCEBF8;
+    color: #142033;
+}
+
+/* Selected tab == the pane: same bg, no bottom border -> merges into the card.
+   Active marker is a top accent bar, not a bottom underline. */
+QTabBar::tab:selected {
+    background: #FFFFFF;
+    border: 1px solid #D3E0EE;
+    border-bottom: none;
+    border-top: 2px solid #0077A8;
+    color: #0A4F6E;
+    font-weight: 800;
+}
+
+QTabBar::tab:pressed {
+    background: #D6EEFB;
+}
+
+QTabBar::close-button {
+    image: url("images/dock_close_light.svg");
+    subcontrol-position: right;
+    margin: 2px 6px 2px 2px;
+    border-radius: 4px;
+}
+
+QTabBar::close-button:hover {
+    image: url("images/dock_close_light_hover.svg");
+    background: rgba(225,29,72,0.10);
+    border-radius: 4px;
+    margin: 2px 6px 2px 2px;
+}
+
+QTabBar::close-button:pressed {
+    background: rgba(225,29,72,0.22);
+    border-radius: 4px;
+    margin: 2px 6px 2px 2px;
+}
+
+/* Tab overflow scroll chips (< > when tabs overflow). Capped to bar height,
+   styled as small rounded chips instead of the native tall grey boxes. */
+QTabBar::scroller {
+    width: 36px;
+}
+QTabBar QToolButton {
+    background: #EEF4FB;
+    border: 1px solid #D6E1EE;
+    border-radius: 7px;
+    margin: 5px 1px;
+    width: 15px;
+}
+QTabBar QToolButton:hover {
+    background: #D6EEFB;
+    border-color: rgba(0,119,168,0.32);
+}
+QTabBar QToolButton:pressed {
+    background: #C2E5F8;
+}
+QTabBar QToolButton:disabled {
+    background: #F4F7FB;
+    border-color: #E6ECF4;
+}
+
+/* Compact "Add Module" corner button. The global QPushButton min-height (32)
+   + padding would overflow/clip the tab bar — cap it to fit. */
+QPushButton#addModuleBtn {
+    background: rgba(0,119,168,0.08);
+    border: 1px solid rgba(0,119,168,0.22);
+    border-radius: 8px;
+    color: #0077A8;
+    font-weight: 750;
+    font-size: 13px;
+    padding: 2px 12px;
+    min-width: 0px;
+    min-height: 24px;
+    max-height: 28px;
+}
+QPushButton#addModuleBtn:hover {
+    background: rgba(0,119,168,0.16);
+    border-color: rgba(0,119,168,0.40);
+    color: #003D57;
+}
+QPushButton#addModuleBtn:pressed {
+    background: rgba(0,119,168,0.24);
+}
+
+/* ── Dock Widget ─────────────────────────────────────────────────── */
+QDockWidget {
+    background: #EEF3FA;
+    color: #142033;
+    font-weight: 650;
+    titlebar-close-icon: none;
+    titlebar-normal-icon: none;
+}
+
+/* Native title bar = the dock's reliable drag handle, blended into the
+   workspace so it reads as the floating card's quiet header strip. */
+QDockWidget::title {
+    background: #EEF3FA;
+    padding: 8px 18px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 800;
+    color: #6B7F99;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+}
+
+/* Hide the native title-bar buttons — the card's own Fullscreen / Close
+   chrome provides those actions. */
+QDockWidget::close-button,
+QDockWidget::float-button {
+    width: 0px;
+    height: 0px;
+    image: none;
+    background: transparent;
+    border: none;
+}
+
+QDockWidget::close-button,
+QDockWidget::float-button {
+    image: url("images/dock_fullscreen_light.svg");
+}
+
+QDockWidget::close-button:hover,
+QDockWidget::float-button:hover {
+    background-color: rgba(0,119,168,0.08);
+    border-color: rgba(0,119,168,0.32);
+    image: url("images/dock_fullscreen_light_hover.svg");
+    border-radius: 4px;
+}
+
+QDockWidget::close-button:pressed,
+QDockWidget::float-button:pressed {
+    background-color: rgba(225,29,72,0.18);
+    border-color: #E11D48;
+}
+
+QDockWidget::float-button {
+    image: url("images/dock_fullscreen_light.svg");
+}
+
+QDockWidget::float-button:hover {
+    background-color: rgba(0,119,168,0.08);
+    border-color: rgba(0,119,168,0.32);
+    image: url("images/dock_fullscreen_light_hover.svg");
+}
+
+QDockWidget::close-button {
+    margin-right: 6px;
+    image: url("images/dock_close_light.svg");
+}
+
+QDockWidget::close-button:hover {
+    image: url("images/dock_close_light_hover.svg");
+}
+
+QDockWidget > QWidget {
+    background-color: #F3F7FC;
+}
+
+QWidget#dockToolChrome {
+    background: transparent;
+    border: none;
+}
+
+/* Drag-to-dock placeholder: fully painted by QPainter, must stay see-through. */
+QWidget#dockDropOverlay {
+    background: transparent;
+}
+
+/* ── Floating dock card ──────────────────────────────────────────── */
+/* Transparent host: its margins are the gap that reveals the workspace,
+   and it paints the faint shadow (see widgets.FloatingDockHost). */
+QWidget#dockFloatHost,
+QDockWidget > QWidget#dockFloatHost {
+    background: transparent;
+}
+
+/* The rounded surface the tool content floats on. */
+QFrame#dockCard {
+    background: #FFFFFF;
+    border: none;
+    border-radius: 16px;
+}
+
+QLabel#dockCardTitle {
+    color: #5A6E89;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    background: transparent;
+}
+
+/* Custom dock title bar (WM-driven drag handle), blended into the workspace. */
+QWidget#dockTitleBar {
+    background: #EEF3FA;
+    border: none;
+}
+
+/* ── Dock Pop Button ─────────────────────────────────────────────── */
+QPushButton[dockPopButton="true"] {
+    background: rgba(255,255,255,0.86);
+    color: #0077A8;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.16), stop:1 rgba(109,93,246,0.10));
+    min-height: 25px;
+    max-height: 25px;
+    padding: 0 11px;
+    font-size: 11px;
+    font-weight: 820;
+    letter-spacing: 0.28px;
+    border-radius: 9px;
+    qproperty-iconSize: 14px 14px;
+}
+
+QPushButton[dockPopButton="true"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.06), stop:1 rgba(109,93,246,0.03));
+    border-color: rgba(0,119,168,0.44);
+}
+
+QPushButton[dockPopButton="true"][isCloseBtn="true"]:hover {
+    background: rgba(225,29,72,0.08);
+    color: #E11D48;
+}
+
+QPushButton[dockPopButton="true"][isPoppedOut="true"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(109,93,246,0.10), stop:1 rgba(0,119,168,0.06));
+    border-color: rgba(109,93,246,0.46);
+    color: #6D5DF6;
+}
+
+/* ── Tree / List / Table Views ───────────────────────────────────── */
+QTreeView,
+QTreeWidget,
+QListView,
+QListWidget,
+QTableView,
+QTableWidget {
+    background: #FFFFFF;
+    alternate-background-color: #EDF4FA;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+    border-radius: 14px;
+    padding: 7px;
+    outline: 0;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+}
+
+QTreeView::item,
+QListView::item,
+QListWidget::item,
+QTableView::item,
+QTreeWidget::item {
+    padding: 7px 10px;
+    border-radius: 9px;
+    margin: 1px 2px;
+    border: 1px solid transparent;
+}
+
+QTreeView::item:hover,
+QListView::item:hover,
+QListWidget::item:hover,
+QTableView::item:hover,
+QTreeWidget::item:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.08), stop:1 rgba(109,93,246,0.04));
+    border-color: rgba(0,119,168,0.18);
+}
+
+QTreeView::item:selected,
+QTreeView::item:selected:active,
+QListView::item:selected,
+QListWidget::item:selected,
+QTableView::item:selected,
+QTreeWidget::item:selected {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0077A8, stop:1 #006292);
+    color: #FFFFFF;
+}
+
+/* Project tree: Akshat-style selection — translucent fill + blue outline
+   instead of a solid slab, and a clean rounded chevron in place of the boxy
+   default branch indicator. selection-background-color is nulled so the branch
+   gutter has no solid colour to fall back to; the fill below is the only paint. */
+QTreeWidget#projectTree {
+    selection-background-color: transparent;
+}
+QTreeWidget#projectTree::item:selected,
+QTreeWidget#projectTree::item:selected:active {
+    background: rgba(0,119,168,0.12);
+    border: 1px solid #0077A8;
+    color: #0B2236;
+}
+/* The branch (left) column must never paint the solid selection slab -- keep
+   it transparent in every state so a selected row shows only the item's
+   outline+fill, not a blue block down the gutter. */
+QTreeWidget#projectTree::branch,
+QTreeWidget#projectTree::branch:hover,
+QTreeWidget#projectTree::branch:selected,
+QTreeWidget#projectTree::branch:has-children:selected,
+QTreeWidget#projectTree::branch:has-siblings:selected,
+QTreeWidget#projectTree::branch:!has-children:!has-siblings:selected {
+    background: transparent;
+}
+QTreeWidget#projectTree::branch:has-children:closed {
+    image: url("images/chevron_right_light.svg");
+}
+QTreeWidget#projectTree::branch:has-children:open {
+    image: url("images/chevron_down_light.svg");
+}
+
+QHeaderView {
+    background-color: #FFFFFF;
+    border: none;
+    border-bottom: 1px solid rgba(0,119,168,0.08);
+}
+
+QHeaderView::section {
+    background-color: transparent;
+    color: #6B7F99;
+    padding: 8px 12px;
+    border: none;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+QHeaderView::section:hover {
+    color: #0077A8;
+}
+
+/* ── Input Fields ────────────────────────────────────────────────── */
+QLineEdit,
+QSpinBox,
+QDoubleSpinBox,
+QPlainTextEdit,
+QTextEdit {
+    background: #FFFFFF;
+    color: #142033;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+    border-radius: 10px;
+    padding: 8px 11px;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+}
+
+QLineEdit:focus,
+QSpinBox:focus,
+QDoubleSpinBox:focus,
+QPlainTextEdit:focus,
+QTextEdit:focus {
+    border-color: #0077A8;
+}
+
+QLineEdit:disabled {
+    background-color: #EDF4FA;
+    color: #9AAABE;
+}
+
+/* ── Inline cell editor (double-click a table cell) ──────────────────
+   The item delegate spawns a QLineEdit inside the view. Left to the field
+   rules above it inherits tall rounded geometry (clipping the text) and the
+   view's bright default Highlight, so the auto-selected value vanishes under a
+   near-white bar. Pin it flush to the cell with a crisp focus ring and a
+   readable selection. */
+QAbstractItemView QLineEdit,
+QTableWidget QLineEdit,
+QTableView QLineEdit,
+QTreeView QLineEdit {
+    margin: 0;
+    padding: 1px 6px;
+    border-radius: 6px;
+    border: 1px solid #0077A8;
+    background: #FFFFFF;
+    color: #142033;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+}
+
+/* ── ComboBox ────────────────────────────────────────────────────── */
+QComboBox {
+    background: #FFFFFF;
+    color: #142033;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+    border-radius: 10px;
+    padding: 8px 32px 8px 11px;
+    min-height: 30px;
+}
+
+QComboBox:hover { border-color: rgba(0,119,168,0.32); }
+QComboBox:focus { border-color: #0077A8; }
+
+QComboBox:disabled {
+    background-color: #EDF4FA;
+    color: #9AAABE;
+}
+
+QComboBox::drop-down { border: none; width: 30px; }
+
+QComboBox::down-arrow {
+    image: url("images/chevron_down_light.svg");
+    width: 12px;
+    height: 12px;
+    margin-right: 12px;
+}
+
+QComboBox::down-arrow:disabled { opacity: 0.4; }
+
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    color: #142033;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.18), stop:1 rgba(109,93,246,0.10));
+    border-radius: 10px;
+    padding: 7px;
+    outline: 0;
+    selection-background-color: transparent;
+    selection-color: #FFFFFF;
+}
+
+QComboBox QAbstractItemView::item {
+    padding: 6px 12px;
+    border-radius: 6px;
+    min-height: 24px;
+    border: 1px solid transparent;
+}
+
+QComboBox QAbstractItemView::item:hover {
+    background-color: rgba(0,119,168,0.07);
+}
+
+QComboBox QAbstractItemView::item:selected {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0077A8, stop:1 #006292);
+    color: #FFFFFF;
+}
+
+/* ── Checkbox / Radio ────────────────────────────────────────────── */
+QCheckBox,
+QRadioButton {
+    spacing: 8px;
+    color: #142033;
+    background-color: transparent;
+    padding: 2px;
+}
+
+QCheckBox::indicator,
+QGroupBox::indicator {
+    width: 17px;
+    height: 17px;
+    border-radius: 5px;
+    border: 1px solid #AFC0D3;
+    background: #FFFFFF;
+}
+
+QCheckBox::indicator:hover,
+QGroupBox::indicator:hover {
+    border-color: #0077A8;
+}
+
+QCheckBox::indicator:checked,
+QGroupBox::indicator:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #0077A8, stop:1 #00A4DC);
+    border-color: #0077A8;
+    image: url("images/check_light.svg");
+}
+
+QCheckBox::indicator:disabled,
+QRadioButton::indicator:disabled {
+    border-color: #D6E1EE;
+    background-color: #EDF4FA;
+}
+
+QRadioButton::indicator {
+    width: 17px;
+    height: 17px;
+    border-radius: 9px;
+    border: 1px solid #AFC0D3;
+    background: #FFFFFF;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #0077A8;
+}
+
+QRadioButton::indicator:checked {
+    background: #FFFFFF;
+    border: 1px solid #0077A8;
+    image: url("images/radio_dot_light.svg");
+}
+
+/* ── Progress Bar ────────────────────────────────────────────────── */
+QProgressBar {
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    border-radius: 8px;
+    background-color: #EDF4FA;
+    text-align: center;
+    color: #142033;
+    min-height: 20px;
+    font-weight: 700;
+}
+
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0077A8, stop:1 #005E86);
+    border-radius: 7px;
+    margin: 0;
+}
+
+/* ── Group Box ───────────────────────────────────────────────────── */
+QGroupBox {
+    background-color: transparent;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    border-radius: 10px;
+    margin-top: 16px;
+    padding: 14px 12px 12px 12px;
+    font-weight: 650;
+    color: #142033;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 8px;
+    color: #0077A8;
+    background-color: palette(window);
+}
+
+QGroupBox[cssClass="themedGroupBox"] {
+    background-color: transparent;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    border-radius: 10px;
+    margin-top: 12px;
+    padding: 14px 12px 12px 12px;
+    font-weight: 650;
+    color: #142033;
+}
+
+QGroupBox[cssClass="themedGroupBox"]::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 8px;
+    color: #0077A8;
+    background-color: palette(window);
+}
+
+QGroupBox[cssClass="ihpGroup"] {
+    border: 1px solid #0077A8;
+    border-radius: 12px;
+    margin-top: 12px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.05), stop:1 rgba(109,93,246,0.03));
+    padding: 14px 12px 12px 12px;
+}
+
+QGroupBox[cssClass="ihpGroup"]::title {
+    color: #0077A8;
+    background: palette(window);
+    padding: 0 8px;
+    left: 10px;
+}
+
+/* Device-model / subcircuit group card. It carries no ::title (the disclosure
+   header is painted inside it), so it wants none of the base rule's top margin
+   or heavy padding -- those exist to clear a title band that is not there. */
+QGroupBox[cssClass="modelGroup"] {
+    background-color: rgba(255,255,255,0.72);
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.16), stop:1 rgba(109,93,246,0.09));
+    border-radius: 12px;
+    margin-top: 0;
+    padding: 4px 8px 4px 8px;
+    font-weight: 400;
+}
+
+/* ── Scroll Bars ─────────────────────────────────────────────────── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 12px;
+    margin: 4px 2px 4px 0;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #BFCADA, stop:1 #AFC0D3);
+    min-height: 34px;
+    border-radius: 6px;
+    margin: 0 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0077A8, stop:1 #005E86);
+}
+QScrollBar::handle:vertical:pressed { background: #005E86; }
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 12px;
+    margin: 0 2px 2px 2px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #BFCADA, stop:1 #AFC0D3);
+    min-width: 32px;
+    border-radius: 6px;
+    margin: 2px 0;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #0077A8, stop:1 #005E86);
+}
+QScrollBar::handle:horizontal:pressed { background: #005E86; }
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+    width: 0;
+}
+
+/* ── Splitter ────────────────────────────────────────────────────── */
+QSplitter::handle {
+    background-color: transparent;
+}
+
+QSplitter::handle:horizontal {
+    width: 5px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 transparent, stop:0.45 rgba(0,119,168,0.06), stop:0.55 rgba(0,119,168,0.06), stop:1 transparent);
+}
+QSplitter::handle:vertical {
+    height: 5px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 transparent, stop:0.45 rgba(0,119,168,0.06), stop:0.55 rgba(0,119,168,0.06), stop:1 transparent);
+}
+QSplitter::handle:hover {
+    background: rgba(0,119,168,0.26);
+}
+
+/* ── Labels ──────────────────────────────────────────────────────── */
+QLabel {
+    background-color: transparent;
+    color: #142033;
+}
+
+QLabel[cssClass="muted"] {
+    color: #6B7F99;
+}
+
+QLabel[cssClass="subtle"] {
+    color: #9AAABE;
+    font-size: 13px;
+}
+
+QLabel[cssClass="heading"] {
+    font-size: 16px;
+    font-weight: 700;
+    color: #142033;
+}
+
+QLabel[cssClass="title"] {
+    font-size: 22px;
+    font-weight: 800;
+    color: #142033;
+    letter-spacing: -0.3px;
+}
+
+QLabel[cssClass="caps"] {
+    font-size: 12px;
+    font-weight: 800;
+    color: #6B7F99;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+QLabel[cssClass="error"]   { color: #E11D48; }
+QLabel[cssClass="warning"] { color: #D97706; }
+QLabel[cssClass="success"] { color: #059669; }
+
+QLabel[cssClass="gradientTitle"] {
+    font-size: 26px;
+    font-weight: 800;
+    color: #142033;
+    letter-spacing: -0.4px;
+}
+
+/* ── Welcome Page ────────────────────────────────────────────────── */
+QLabel[cssClass="welcomeTitle"] {
+    font-weight: 700;
+    color: #142033;
+    font-size: 14px;
+}
+
+QLabel[cssClass="welcomeDesc"] {
+    color: #6B7F99;
+    font-size: 13px;
+}
+
+#welcomeScroll {
+    background-color: transparent;
+    border: none;
+}
+
+QFrame#welcomeHero {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(255,255,255,0.96), stop:0.5 rgba(248,251,255,0.94), stop:1 rgba(255,255,255,0.96));
+    border: none;
+    border-radius: 18px;
+}
+
+QLabel#welcomeHeroTitle {
+    font-size: 28px;
+    font-weight: 850;
+    color: #142033;
+    letter-spacing: -0.7px;
+}
+
+QLabel#welcomeHeroSubtitle {
+    font-size: 14px;
+    color: #405168;
+}
+
+QFrame#welcomeCard {
+    background-color: #FFFFFF;
+    border: none;
+    border-radius: 16px;
+}
+
+QFrame#welcomeCard:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.04), stop:1 rgba(109,93,246,0.02));
+}
+
+QFrame#welcomeCard:focus {
+    border: none;
+}
+
+/* ── Spice Editor ────────────────────────────────────────────────── */
+QWidget#editorFindBar {
+    background: rgba(255,255,255,0.94);
+    border-bottom: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.14), stop:1 rgba(109,93,246,0.08));
+    border-radius: 10px;
+    margin: 2px 4px;
+}
+
+QWidget#editorFindBar QPushButton {
+    color: #142033;
+}
+
+QWidget#editorFindBar QLineEdit {
+    background: #FFFFFF;
+    color: #142033;
+    border: 1px solid rgba(0,119,168,0.14);
+    border-radius: 8px;
+    padding: 5px 9px;
+}
+
+QWidget#editorFindBar QLineEdit:focus {
+    border-color: #0077A8;
+}
+
+QToolBar#spiceEditorToolbar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255,255,255,0.98), stop:1 rgba(248,251,255,0.96));
+    border-bottom: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.14), stop:1 rgba(109,93,246,0.08));
+    padding: 6px 8px;
+    spacing: 6px;
+}
+
+QToolBar#spiceEditorToolbar QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 8px;
+    color: #405168;
+    margin: 0 1px;
+}
+
+QToolBar#spiceEditorToolbar QToolButton:hover {
+    background: rgba(0,119,168,0.08);
+    border-color: rgba(0,119,168,0.26);
+    color: #0077A8;
+}
+
+QToolBar#spiceEditorToolbar QToolButton:pressed {
+    background: rgba(0,119,168,0.14);
+    border-color: #0077A8;
+    color: #005E86;
+}
+
+QToolBar#spiceEditorToolbar QToolButton:disabled {
+    color: #9AAABE;
+}
+
+QStatusBar#spiceEditorStatus {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FFFFFF, stop:1 #F8FBFF);
+    border-top: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+}
+
+/* ── Console / Note ──────────────────────────────────────────────── */
+QTextEdit#mainNoteConsole,
+QPlainTextEdit#simulationConsole {
+    background-color: #FBFDFF;
+    color: #405168;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+    border-radius: 14px;
+    padding: 12px 14px;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+    font-size: 13px;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+}
+
+QPlainTextEdit#simulationConsole:focus {
+    border-color: #0077A8;
+}
+
+/* ── Converter Description ───────────────────────────────────────── */
+QFrame#converterDescription {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(255,255,255,0.94), stop:1 rgba(248,251,255,0.96));
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    border-radius: 14px;
+    padding: 14px 16px;
+}
+
+QFrame#converterDescription QLabel {
+    color: #142033;
+}
+
+/* ── Verilog Verifier ────────────────────────────────────────────── */
+QWidget#verilogRoot {
+    background-color: #F3F7FC;
+}
+
+QWidget#verilogSidebar,
+QWidget#verilogTopContainer,
+QWidget#verilogBottomContainer {
+    background: transparent;
+}
+
+/* Console band = the same connected-tab card as the editor. */
+QTabWidget#verilogBottomContainer::pane {
+    background: #FFFFFF;
+    border: 1px solid #D3E0EE;
+    border-radius: 0px;
+    margin-top: -1px;
+    padding: 10px 12px 10px 12px;
+}
+
+QLabel#verilogSidebarTitle {
+    color: #0077A8;
+    font-size: 12px;
+    font-weight: 860;
+    text-transform: uppercase;
+    letter-spacing: 1.0px;
+    padding: 2px 4px;
+}
+
+/* Splitter gap between sidebar card and editor card. Painted panel colour so
+   the native grey grip handle and its flared foot disappear into the gap. */
+QSplitter#verifierTopSplitter::handle:horizontal {
+    background: #F3F7FC;
+    width: 14px;
+}
+
+QListWidget#verilogHierarchyList {
+    background: #FFFFFF;
+    border: 1px solid #D3E0EE;
+    border-radius: 0px;
+    padding: 7px;
+    alternate-background-color: #EDF4FA;
+}
+
+/* Corner nub (scrollbar intersection square) is unstyled by default and
+   paints a square grey nub that breaks the card's rounded bottom-right. */
+QListWidget#verilogHierarchyList::corner {
+    background: transparent;
+}
+
+QListWidget#verilogHierarchyList::item {
+    border-radius: 8px;
+    padding: 0px;
+    margin: 0px;
+}
+
+QListWidget#verilogHierarchyList::item:hover {
+    background-color: rgba(0,119,168,0.08);
+}
+
+QListWidget#verilogHierarchyList::item:selected {
+    /* Background-only selection — no border. A 1px border shifts the item-widget
+       rect on select, staggering the row content ("displaced down button"). */
+    background-color: rgba(0,119,168,0.20);
+    color: #16263A;
+}
+
+/* Console sits INSIDE the pane card: no frame of its own. The card owns the
+   shape + inset; the error state only swaps the text colour. */
+QTextEdit#verilogConsole {
+    background-color: transparent;
+    color: #405168;
+    border: none;
+    padding: 0px;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+    font-size: 13px;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+}
+
+QTextEdit#verilogConsoleError {
+    background: transparent;
+    color: #BE123C;
+    border: none;
+    padding: 0px;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+    font-size: 13px;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+}
+
+QLabel#verilogNoWaveform {
+    color: #9AAABE;
+    font-size: 14px;
+    font-style: italic;
+}
+
+QWidget#hierarchyRow {
+    background: transparent;
+    border: none;
+}
+
+QLabel#hierarchyName {
+    color: #16263A;
+    font-size: 13px;
+    font-weight: 650;
+    background: transparent;
+}
+
+/* Flat borderless glyphs: a bordered box read as a chip taller than the row's
+   selection pill. No frame -> nothing competes with the pill; only a soft
+   rounded bg on hover. */
+QPushButton#hierarchyMoveBtn {
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    color: #6B7F99;
+    /* Solid ▲/▼ at 11px in a 26px target: the old 22px/hairline glyph pair was
+       a squint-and-aim control. Size matches setFixedSize in VerilogVerifier. */
+    font-size: 11px;
+    font-weight: 800;
+    padding: 0;
+    /* Pin the size — the global QPushButton min-width otherwise overrides
+       setFixedSize for stylesheet-styled buttons and steals the name's space. */
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
+}
+
+QPushButton#hierarchyMoveBtn:hover {
+    background: rgba(0,119,168,0.14);
+    color: #003D57;
+}
+
+QPushButton#hierarchyMoveBtn:pressed {
+    background: rgba(0,119,168,0.26);
+    color: #00293B;
+}
+
+/* First row's up / last row's down: dimmed, not hidden, so the row layout
+   never shifts and the limit reads as a limit rather than a dead click. */
+QPushButton#hierarchyMoveBtn:disabled {
+    background: transparent;
+    color: rgba(107,127,153,0.32);
+}
+
+/* File menu button on the build bar. A bare QToolButton renders native and
+   sits short + unstyled next to the secondary QPushButtons; match their
+   height, border and font so the bar reads as one row. */
+QToolButton#verifierFileBtn {
+    background: rgba(255,255,255,0.86);
+    color: #0077A8;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.18), stop:1 rgba(109,93,246,0.10));
+    border-radius: 10px;
+    /* Right padding is a reserved lane for the drop arrow: the label centres
+       inside the content rect, so a symmetric padding would push "File" into
+       the indicator that ::menu-indicator pins to the right edge. */
+    padding: 8px 28px 8px 16px;
+    font-weight: 600;
+    font-size: 14px;
+    min-height: 32px;
+    min-width: 62px;
+}
+
+QToolButton#verifierFileBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.07), stop:1 rgba(109,93,246,0.04));
+    border-color: rgba(0,119,168,0.48);
+    color: #005E86;
+}
+
+/* InstantPopup keeps the button sunken while the menu is open; without this it
+   fell back to the native pressed look mid-interaction. */
+QToolButton#verifierFileBtn:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+    border-color: rgba(0,119,168,0.48);
+}
+
+QToolButton#verifierFileBtn:focus {
+    border-color: #0077A8;
+}
+
+QToolButton#verifierFileBtn::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    right: 10px;
+    width: 10px;
+}
+
+/* Console "Copy" lives in the tab-bar corner. Strip back to a quiet text
+   action so it doesn't read as a floating white card over the console. */
+QPushButton#verifierConsoleCopy {
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: #5A6B80;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 4px 10px;
+    min-width: 0;
+    min-height: 0;
+    margin-right: 6px;
+}
+
+QPushButton#verifierConsoleCopy:hover {
+    background: rgba(0,119,168,0.10);
+    color: #005E86;
+}
+
+QPushButton#verifierConsoleCopy:pressed {
+    background: rgba(0,119,168,0.18);
+}
+
+/* Run status: phase + elapsed clock, and a moving bar beside it. Shown only
+   while a compile/simulate is in flight, so a long run reads as "working",
+   not "hung". */
+QLabel#verifierRunStatus {
+    color: #5A6B80;
+    font-size: 12px;
+    font-weight: 600;
+    padding-right: 6px;
+}
+
+QProgressBar#verifierRunBar {
+    background: rgba(0,119,168,0.10);
+    border: none;
+    border-radius: 4px;
+    max-height: 8px;
+    min-height: 8px;
+}
+
+QProgressBar#verifierRunBar::chunk {
+    background: #0077A8;
+    border-radius: 4px;
+}
+
+QPlainTextEdit#verilogCodeEditor {
+    background-color: #FBFDFF;
+    color: #142033;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.10), stop:1 rgba(109,93,246,0.06));
+    border-radius: 15px;
+    padding: 12px 14px;
+    selection-background-color: #0077A8;
+    selection-color: #FFFFFF;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+}
+
+QPlainTextEdit#verilogCodeEditor:focus {
+    border-color: #0077A8;
+}
+
+QWidget#verilogFindBar {
+    background: rgba(255,255,255,0.94);
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.16), stop:1 rgba(109,93,246,0.08));
+    border-radius: 12px;
+}
+
+/* ── Preferences ─────────────────────────────────────────────────── */
+QDialog#preferencesDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #F3F7FC, stop:0.5 #F6F8FC, stop:1 #F3F7FC);
+}
+
+/* Preferences left nav rail */
+QListWidget#prefsNav {
+    background: transparent;
+    border: none;
+    border-right: 1px solid rgba(0,119,168,0.14);
+    border-radius: 0;
+    outline: 0;
+    padding: 8px 6px;
+}
+
+QListWidget#prefsNav::item {
+    padding: 11px 14px;
+    border-radius: 10px;
+    margin: 2px 4px;
+    border: 1px solid transparent;
+    color: #6B7F99;
+    font-weight: 700;
+}
+
+QListWidget#prefsNav::item:hover {
+    background: rgba(0,119,168,0.08);
+    color: #142033;
+}
+
+QListWidget#prefsNav::item:selected {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(0,119,168,0.16), stop:1 rgba(109,93,246,0.08));
+    color: #142033;
+    border-left: 3px solid #0077A8;
+}
+
+/* Segmented theme control */
+QPushButton[cssClass="segmentBtn"] {
+    background: #FFFFFF;
+    color: #6B7F99;
+    border: 1px solid rgba(0,119,168,0.16);
+    border-right: none;
+    padding: 9px 16px;
+    font-weight: 700;
+    min-width: 0;
+    border-radius: 0;
+}
+
+QPushButton[cssClass="segmentBtn"]:hover {
+    background: rgba(0,119,168,0.08);
+    color: #142033;
+}
+
+QPushButton[cssClass="segmentBtn"]:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #00A4DC, stop:1 #0077A8);
+    color: #FFFFFF;
+    border-color: #0077A8;
+}
+
+QTabWidget#preferencesTabs::pane {
+    background: #FFFFFF;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.14), stop:1 rgba(109,93,246,0.08));
+    border-radius: 16px;
+    padding: 12px;
+}
+
+QTabWidget#preferencesTabs QTabBar::tab {
+    border-radius: 10px 10px 0 0;
+    padding: 10px 22px;
+}
+
+QLabel#preferencesPreviewStrip,
+QLabel[cssClass="previewStrip"] {
+    border-radius: 12px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+}
+
+QPushButton[cssClass="swatch"] {
+    border-radius: 16px;
+    border: 2px solid transparent;
+    background: transparent;
+}
+
+QPushButton[cssClass="swatch"]:hover {
+    border: 2px solid #0077A8;
+}
+
+QPushButton[cssClass="swatch"][selected="true"] {
+    border: 3px solid #0077A8;
+}
+
+QFrame#themePreview {
+    border-radius: 14px;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    background: transparent;
+    min-height: 82px;
+}
+
+QPushButton[cssClass="colorPick"] {
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.16), stop:1 rgba(109,93,246,0.08));
+    border-radius: 8px;
+    min-height: 28px;
+}
+
+QPushButton[cssClass="colorPick"]:hover {
+    border-color: #0077A8;
+}
+
+/* ── Message Box ─────────────────────────────────────────────────── */
+QMessageBox#esimMessageBox {
+    background: #FFFFFF;
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.18), stop:1 rgba(109,93,246,0.10));
+    border-radius: 16px;
+}
+
+QMessageBox#esimMessageBox QLabel {
+    color: #142033;
+    font-size: 14px;
+}
+
+QMessageBox#esimMessageBox QPushButton {
+    min-width: 84px;
+}
+
+/* ── Progress Bar (ID) ───────────────────────────────────────────── */
+QProgressBar#progressBar {
+    border: 1px solid qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(0,119,168,0.12), stop:1 rgba(109,93,246,0.06));
+    border-radius: 8px;
+    background-color: #EDF4FA;
+    text-align: center;
+    color: #142033;
+    min-height: 20px;
+    font-weight: 700;
+}
+
+QProgressBar#progressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0077A8, stop:1 #005E86);
+    border-radius: 7px;
+}
+
+/* Verilog waveform tab header (Back-to-Verify strip) — see DockArea.py. */
+QWidget#waveHeader {
+    background: #F3F7FC;
+    border-bottom: 1px solid #DCE6F1;
+}

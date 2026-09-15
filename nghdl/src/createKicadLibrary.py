@@ -1,8 +1,10 @@
 from Appconfig import Appconfig
-import re
 import os
 import xml.etree.cElementTree as ET
 from PyQt6 import QtWidgets
+from kicad_symlib import (
+    _balanced_end, _read_parts, _write_lib,
+    generated_symlib_path, ensure_lib_registered)
 
 class AutoSchematic(QtWidgets.QWidget):
 
@@ -13,14 +15,14 @@ class AutoSchematic(QtWidgets.QWidget):
         self.template = Appconfig.kicad_sym_template.copy()
         self.xml_loc = Appconfig.xml_loc
         self.lib_loc = Appconfig.lib_loc
+        # eSim_Nghdl now lives in ~/.esim/kicad_symbols (see kicad_symlib);
+        # the old Windows install path is passed as a legacy migration probe.
+        legacy = []
         if os.name == 'nt':
-            eSim_src = Appconfig.src_home
-            inst_dir = eSim_src.replace('\\eSim', '')
-            self.kicad_nghdl_sym = \
-                inst_dir + '/KiCad/share/kicad/symbols/eSim_Nghdl.kicad_sym'
-        else:
-            self.kicad_nghdl_sym = \
-                '/usr/share/kicad/symbols/eSim_Nghdl.kicad_sym'
+            inst_dir = Appconfig.src_home.replace('\\eSim', '')
+            legacy.append(inst_dir + '/KiCad/share/kicad/symbols')
+        self.kicad_nghdl_sym = generated_symlib_path(
+            "eSim_Nghdl", legacy_dirs=legacy)
         self.parser = Appconfig.parser_nghdl
 
     def createKicadSymbol(self):
@@ -152,50 +154,23 @@ class AutoSchematic(QtWidgets.QWidget):
 
     def removeOldLibrary(self):
         """
-        Remove all existing KiCad symbols related to self.modelname
-        from the .kicad_sym file.
+        Remove this model's KiCad symbol block from eSim_Nghdl.kicad_sym.
+
+        Parse-based (kicad_symlib): the file is read into balanced top-level
+        part blocks keyed by *exact* model name, this model's block is dropped,
+        and a valid file is re-serialized atomically. This replaces the old
+        line-by-line paren scanner, which (a) matched on
+        ``startswith(modelname + "_")`` and so wiped UNRELATED models whose name
+        merely began with this one (``and2`` killing ``and2_gate``), (b) counted
+        parens that appear inside quoted pin-name/property strings, and (c) wrote
+        the shared file non-atomically, so a crash mid-write corrupted it.
+        Sub-units (``name_0_1`` / ``name_1_1``) are nested inside the parent
+        block and so are removed with it -- no separate prefix match needed.
+        Idempotent: a no-op when the model (or the file) is absent.
         """
-
-        sym_path = self.kicad_nghdl_sym
-
-        if not os.path.exists(sym_path):
-            return
-
-        with open(sym_path, "r") as f:
-            lines = f.readlines()
-
-        output = []
-        skip_block = False
-        paren_depth = 0
-
-        for line in lines:
-            stripped = line.lstrip()
-
-            # Detect start of a symbol block
-            if stripped.startswith("(symbol"):
-                # Extract symbol name safely
-                parts = stripped.split('"')
-                if len(parts) >= 2:
-                    sym_name = parts[1]
-
-                    # Match main symbol and all its sub-symbols
-                    if sym_name == self.modelname or sym_name.startswith(self.modelname + "_"):
-                        skip_block = True
-                        paren_depth = line.count("(") - line.count(")")
-                        continue
-
-            if skip_block:
-                # Track parentheses until symbol block ends
-                paren_depth += line.count("(") - line.count(")")
-                if paren_depth <= 0:
-                    skip_block = False
-                continue
-
-            # Keep line if not inside a removed symbol
-            output.append(line)
-
-        with open(sym_path, "w") as f:
-            f.writelines(output)
+        parts = _read_parts(self.kicad_nghdl_sym)
+        parts.pop(self.modelname, None)
+        _write_lib(self.kicad_nghdl_sym, parts)
 
     # def createSym(self):
     #     self.dist_port = 2.54         # Distance between two ports (mil)
@@ -319,34 +294,22 @@ class AutoSchematic(QtWidgets.QWidget):
     #     )
 
     def createSym(self):
-        self.dist_port = 2.54
-        self.inc_size = 2.54
+        '''
+            creating the symbol
+            (pins snapped to KiCad grid)
+        '''
+        # Rounding quantum for every coordinate written below. It must be the
+        # KiCad placement grid itself (100 mil = 2.54 mm): a smaller quantum
+        # (it used to be 0.635 = 25 mil) lets pins settle on half-grid points
+        # such as y=80.645, which no schematic grid ever hits, so wires cannot
+        # be attached to them.
+        self.grid = 2.54
+        self.dist_port = self.grid          # Distance between two ports # 100 mil (= 2.54 mm)
+        self.inc_size = self.dist_port      # Increment size of a block
 
-        cwd = os.getcwd()
-        os.chdir(self.lib_loc)
-        print("Changing directory to", self.lib_loc)
-
-        # -------------------------------
-        # 1. Read existing library safely
-        # -------------------------------
-        if os.path.exists(self.kicad_nghdl_sym):
-            with open(self.kicad_nghdl_sym, "r") as f:
-                content = f.read().rstrip()
-        else:
-            content = ""
-
-        # -------------------------------
-        # 2. Ensure library wrapper exists
-        # -------------------------------
-        if not content:
-            content = (
-                "(kicad_symbol_lib (version 20211014)\n"
-                "  (generator kicad_symbol_editor)\n\n"
-            )
-        else:
-            # remove ONLY the final closing ')'
-            if content.endswith(")"):
-                content = content[:-1].rstrip() + "\n"
+        def snap(val):
+            snapped = round(float(val) / self.grid) * self.grid
+            return f"{snapped:.3f}"
 
         # -------------------------------
         # 3. Build symbol definition
@@ -376,7 +339,11 @@ class AutoSchematic(QtWidgets.QWidget):
             "comp_name", f"{self.modelname}_0_1"
         ).split()
 
-        draw_pos[8] = str(
+        # Body width (7) and height (8) are snapped too, so the body edges land
+        # on the grid and the pin roots meet them exactly instead of overshoot-
+        # ing the outline by a fraction of a mm.
+        draw_pos[7] = snap(draw_pos[7])
+        draw_pos[8] = snap(
             float(draw_pos[8]) + self.findBlockSize() * self.inc_size
         )
         draw_pos_rec = draw_pos[8]
@@ -391,6 +358,8 @@ class AutoSchematic(QtWidgets.QWidget):
         # -------------------------------
         input_port = tmpl["input_port"].split()
         output_port = tmpl["output_port"].split()
+        input_port[3] = snap(float(input_port[3]))
+        output_port[3] = snap(float(output_port[3]))
 
         inputs = self.char_sum(self.portInfo[:self.input_length])
         outputs = self.char_sum(self.portInfo[self.input_length:])
@@ -403,28 +372,42 @@ class AutoSchematic(QtWidgets.QWidget):
             if i < inputs:
                 input_port[9] = f"\"in{i+1}\""
                 input_port[13] = f"\"{i+1}\""
-                input_port[4] = str(float(input_port[4]) - self.dist_port)
+                input_port[4] = snap(float(input_port[4]) - self.dist_port)
                 symbol_block.append(" ".join(input_port))
             else:
                 output_port[9] = f"\"out{i-inputs+1}\""
                 output_port[13] = f"\"{i+1}\""
-                output_port[4] = str(float(output_port[4]) - self.dist_port)
+                output_port[4] = snap(float(output_port[4]) - self.dist_port)
                 symbol_block.append(" ".join(output_port))
 
         # end draw + end symbol
+        # end_draw is "))" which closes both (symbol "<name>_1_1" and
+        # the outer (symbol "<name>" — no additional ")" needed.
         symbol_block.append(tmpl["end_draw"])
-        symbol_block.append(")")  # close symbol
 
         # -------------------------------
-        # 6. Write back library
+        # 6. Commit to library (idempotent + atomic)
         # -------------------------------
-        with open(self.kicad_nghdl_sym, "w") as f:
-            f.write(content)
-            f.write("\n".join(symbol_block))
-            f.write("\n)\n")  # close kicad_symbol_lib
+        # Assemble this model's block as one balanced s-expression and hand it
+        # to the shared writer, which replaces any existing block of the same
+        # name and re-serializes a valid, balanced file via a temp file +
+        # os.replace. No raw byte/line surgery and no CWD change, so repeated
+        # add/overwrite/remove can never glue blocks, leave residue, or corrupt
+        # the shared library -- and overwriting 1000x leaves exactly one block.
+        block = "\n".join(symbol_block).strip()
+        if _balanced_end(block, 0) != len(block):
+            raise ValueError(
+                "Refusing to write malformed symbol block for '" +
+                str(self.modelname) + "': not a single balanced s-expression")
+        parts = _read_parts(self.kicad_nghdl_sym)
+        parts[self.modelname] = block
+        _write_lib(self.kicad_nghdl_sym, parts)
 
-        os.chdir(cwd)
-        print("Leaving directory", self.lib_loc)
+        # eSim_Nghdl moved out of ${KICAD6_SYMBOL_DIR}; point the user's
+        # sym-lib-table(s) at the ~/.esim path (best-effort, non-blocking).
+        ensure_lib_registered(
+            "eSim_Nghdl", self.kicad_nghdl_sym,
+            descr="eSim NGHDL (GHDL co-simulation) symbols")
 
         QtWidgets.QMessageBox.information(
             self.parent,
@@ -459,19 +442,20 @@ class PortInfo:
         read_file.close()
 
         for line in data:
-            if re.match(r'^\s*$', line):
-                pass
-            else:
-                in_items = re.findall(
-                    "IN", line, re.MULTILINE | re.IGNORECASE
-                )
-                out_items = re.findall(
-                    "OUT", line, re.MULTILINE | re.IGNORECASE
-                )
-            if in_items:
-                input_list.append(line.split())
-            if out_items:
-                output_list.append(line.split())
+            # Classify on the direction FIELD, not a substring of the whole
+            # line (see model_generation.readPortInfo): a port whose name
+            # contains "in"/"out" — e.g. "sout" — was otherwise double-counted,
+            # inflating the KiCad symbol pin count. Skip < 3-field lines
+            # (blank/malformed); this also fixes the old unbound-name crash on
+            # a leading blank line.
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            direction = parts[1].lower()
+            if direction in ("in", "inout"):
+                input_list.append(parts)
+            elif direction == "out":
+                output_list.append(parts)
 
         for in_list in input_list:
             self.bit_list.append(in_list[2])

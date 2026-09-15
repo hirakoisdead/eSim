@@ -1,6 +1,8 @@
 import os
+import sys
 import subprocess
 from PyQt6.QtWidgets import QMessageBox
+from configuration import Dialogs
 
 class LTspiceLibConverter:
     def __init__(self, parent):
@@ -11,9 +13,21 @@ class LTspiceLibConverter:
         # Get the base name of the file without the extension
         filename = os.path.splitext(os.path.basename(file_path))[0]
         conPath = os.path.dirname(file_path)
-        
+
+        # getsize on a path the user typed, or on a file a sync client removed
+        # between the file-dialog pick and now, raises FileNotFoundError on the
+        # GUI thread (excepthook dialog). Read the size defensively so a
+        # missing / unreadable source degrades to a clear dialog instead.
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError as e:
+            Dialogs.critical(
+                self.parent, "File not found",
+                "The selected file could not be read:\n\n" + str(e))
+            return
+
         # Checks if the file is not empty
-        if os.path.getsize(file_path) > 0:
+        if file_size > 0:
             # Get the absolute path of the current script's directory
             script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -31,13 +45,16 @@ class LTspiceLibConverter:
             print(parser_path)
             # Strip the .asy extension
             file_path_no_ext = os.path.splitext(file_path)[0]
-            command = ["python3", "lib_LTspice2Kicad.py", file_path_no_ext]
+            command = [sys.executable, "lib_LTspice2Kicad.py", file_path_no_ext]
             print("Running command:", " ".join(command), "in", parser_path)
             try:
-                subprocess.run(command, check=True, cwd=parser_path)
+                subprocess.run(command, check=True, cwd=parser_path,
+                               capture_output=True, text=True,
+                               creationflags=getattr(
+                                   subprocess, 'CREATE_NO_WINDOW', 0))
 
                 # Message box with the conversion success message
-                msg_box = QMessageBox()
+                msg_box = Dialogs.make_message_box(self.parent)
                 msg_box.setIcon(QMessageBox.Icon.Information)
                 msg_box.setWindowTitle("Conversion Successful")
                 msg_box.setText("The file has been converted successfully.")
@@ -45,11 +62,16 @@ class LTspiceLibConverter:
                 print("Conversion of LTspice library is Successful")
 
             except subprocess.CalledProcessError as e:
-                print("Error:", e)
+                detail = (e.stderr or e.stdout or str(e)).strip()
+                print("Error:", detail)
+                Dialogs.critical(
+                    self.parent, "Conversion failed",
+                    "LTspice library conversion failed:\n\n"
+                    + "\n".join(detail.splitlines()[:15]))
         else:
             print("File is empty. Cannot perform conversion.")
             # A message box indicating that the file is empty
-            msg_box = QMessageBox()
+            msg_box = Dialogs.make_message_box(self.parent)
             msg_box.setIcon(QMessageBox.Icon.Warning)
             msg_box.setWindowTitle("Empty File")
             msg_box.setText("The selected file is empty. Conversion cannot be performed.")
@@ -61,7 +83,7 @@ class LTspiceLibConverter:
             # Check if the file path contains spaces
             if ' ' in file_path:
                 # Show a message box indicating that spaces are not allowed
-                msg_box = QMessageBox()
+                msg_box = Dialogs.make_message_box(self.parent)
                 msg_box.setIcon(QMessageBox.Icon.Warning)
                 msg_box.setWindowTitle("Invalid File Path")
                 msg_box.setText("Spaces are not allowed in the file path.")
@@ -73,7 +95,7 @@ class LTspiceLibConverter:
                 print(file_path)
                 self.convert(file_path)
             else:
-                msg_box = QMessageBox()
+                msg_box = Dialogs.make_message_box(self.parent)
                 msg_box.setIcon(QMessageBox.Icon.Warning)
                 msg_box.setWindowTitle("Invalid File Path")
                 msg_box.setText("Only .asy file can be converted.")
@@ -85,7 +107,7 @@ class LTspiceLibConverter:
             print("No file selected.")
 
             # Message box indicating that no file is selected
-            msg_box = QMessageBox()
+            msg_box = Dialogs.make_message_box(self.parent)
             msg_box.setIcon(QMessageBox.Icon.Warning)
             msg_box.setWindowTitle("No File Selected")
             msg_box.setText("Please select a file before uploading.")

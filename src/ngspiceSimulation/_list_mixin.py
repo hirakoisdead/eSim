@@ -4,9 +4,9 @@ from typing import List
 
 from PyQt6 import QtGui, QtCore
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QLabel, QListWidgetItem,
-                              QMenu, QColorDialog, QInputDialog, QMessageBox,
+                              QMenu, QColorDialog, QInputDialog,
                               QWidgetAction, QGridLayout, QPushButton)
-from PyQt6.QtGui import QColor, QBrush, QPainter, QPixmap, QPen
+from PyQt6.QtGui import QColor, QBrush, QPainter, QPixmap
 from PyQt6.QtCore import Qt
 
 from .constants import (DEFAULT_LINE_THICKNESS, THICKNESS_OPTIONS, LINE_STYLES,
@@ -39,6 +39,10 @@ class _ListMixin:
     def populate_waveform_list(self) -> None:
         self.waveform_list.clear()
         self.traces.clear()
+        # New dataset: everything keyed to the old traces is stale.
+        self._stats_cache.clear()
+        self._decim_registry.clear()
+        self._stacked_pane_keys = []
         saved_colors = self.config.get('trace_colours', {})
         saved_thickness = self.config.get('trace_thickness', {})
         saved_style = self.config.get('trace_style', {})
@@ -52,6 +56,7 @@ class _ListMixin:
             item.setToolTip("Voltage signal" if i < self.obj_dataext.volts_length else "Current signal")
             self.waveform_list.addItem(item)
             self.update_list_item_appearance(item, i)
+        self._refresh_select_all_btn()
 
     def filter_waveforms(self, text: str) -> None:
         needle = text.lower()
@@ -59,6 +64,7 @@ class _ListMixin:
             item = self.waveform_list.item(i)
             if item:
                 item.setHidden(needle not in item.text().lower())
+        self._refresh_select_all_btn()
 
     def on_waveform_toggle(self, item: QListWidgetItem) -> None:
         index = item.data(Qt.ItemDataRole.UserRole)
@@ -70,12 +76,14 @@ class _ListMixin:
                 label, _fx, _fy, color, *_ = self._func_traces[f_idx]
                 self._update_func_item_appearance(
                     item, label, color, self._func_visible[f_idx])
+            self._refresh_select_all_btn()
             self._schedule_refresh()
             return
         # item.isSelected() is unreliable when setItemWidget is used — clicks land
         # on the child widget and never update Qt's selection model. Toggle instead.
         self.traces[index].visible = not self.traces[index].visible
         self.update_list_item_appearance(item, index)
+        self._refresh_select_all_btn()
         self._schedule_refresh()
 
     def update_list_item_appearance(self, item: QListWidgetItem, index: int) -> None:
@@ -98,7 +106,7 @@ class _ListMixin:
         icon_label.setPixmap(icon.pixmap(18, 18))
         text_label = QLabel(t.name)
         text_label.setAttribute(transparent, True)
-        text_label.setStyleSheet("color: #212121; font-weight: 500;" if t.visible else "color: #757575; font-weight: normal;")
+        text_label.setStyleSheet("font-weight: 500;" if t.visible else "color: #757575; font-weight: normal;")
         layout.addWidget(icon_label)
         layout.addWidget(text_label)
         layout.addStretch()
@@ -176,6 +184,7 @@ class _ListMixin:
                         self.update_list_item_appearance(item, index)
         finally:
             self.waveform_list.setUpdatesEnabled(True)
+        self._refresh_select_all_btn()
         self._schedule_refresh()
 
     def deselect_all_waveforms(self) -> None:
@@ -198,7 +207,45 @@ class _ListMixin:
                         self.update_list_item_appearance(item, index)
         finally:
             self.waveform_list.setUpdatesEnabled(True)
+        self._refresh_select_all_btn()
         self._schedule_refresh()
+
+    def _all_waveforms_selected(self) -> bool:
+        """True if every non-hidden waveform-list item is currently selected.
+
+        Scoped to non-hidden items so the toggle stays in sync with what
+        select_all_waveforms actually acts on while a search filter is active.
+        Returns False for an empty/all-hidden list (nothing to deselect).
+        """
+        any_item = False
+        for i in range(self.waveform_list.count()):
+            item = self.waveform_list.item(i)
+            if not item or item.isHidden():
+                continue
+            any_item = True
+            index = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(index, int) and index < 0:
+                f_idx = -index - 1
+                sel = f_idx < len(self._func_visible) and self._func_visible[f_idx]
+            else:
+                sel = index in self.traces and self.traces[index].visible
+            if not sel:
+                return False
+        return any_item
+
+    def _refresh_select_all_btn(self) -> None:
+        """Keep the toggle's label naming the action its next click performs."""
+        if not hasattr(self, 'select_all_btn'):
+            return
+        self.select_all_btn.setText(
+            "Deselect All" if self._all_waveforms_selected() else "Select All")
+
+    def toggle_select_all_waveforms(self) -> None:
+        """One-button toggle: select all if any are off, else deselect all."""
+        if self._all_waveforms_selected():
+            self.deselect_all_waveforms()
+        else:
+            self.select_all_waveforms()
 
     def show_list_context_menu(self, position: QtCore.QPoint) -> None:
         item = self.waveform_list.itemAt(position)

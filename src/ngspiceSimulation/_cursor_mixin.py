@@ -4,8 +4,7 @@ import numpy as np
 from matplotlib.lines import Line2D
 from .constants import (CURSOR_ALPHA, FREQ_UNIT_THRESHOLD_KHZ, FREQ_UNIT_THRESHOLD_MHZ,
                         FREQ_UNIT_THRESHOLD_GHZ)
-from .math_utils import _format_measurement, _format_frequency
-from .trace import Trace
+from .math_utils import _format_measurement
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,15 @@
 from PyQt6 import QtWidgets, QtCore
+from configuration import Dialogs
+from configuration import paths
 import os
 from xml.etree import ElementTree as ET
 from . import TrackWidget
+from . import ModelGrouping
+from .ModelGroupWidget import (ModelGroupWidget, InstanceRow,
+                               finish_group_layout)
+from projManagement import modelCache
+from projManagement.projectPaths import previous_values_path
+from frontEnd.theme_utils import zoom_px
 
 
 class DeviceModel(QtWidgets.QWidget):
@@ -22,32 +30,29 @@ class DeviceModel(QtWidgets.QWidget):
         - trackLibraryWithoutButton
     """
 
-    def __init__(self, schematicInfo, clarg1):
+    def __init__(self, schematicInfo, clarg1, track=None):
 
         self.clarg1 = clarg1
         kicadFile = self.clarg1
-        (projpath, filename) = os.path.split(kicadFile)
-        project_name = os.path.basename(projpath)
         self.root = []
         try:
             f = open(
-                os.path.join(
-                    projpath,
-                    project_name +
-                    "_Previous_Values.xml"),
+                previous_values_path(kicadFile),
                 'r')
             tree = ET.parse(f)
             parent_self = tree.getroot()
             for child in parent_self:
                 if child.tag == "devicemodel":
                     self.root = child
-        except BaseException:
+        except Exception:
             print("Device Model Previous XML is Empty")
 
         QtWidgets.QWidget.__init__(self)
 
-        # Creating track widget object
-        self.obj_trac = TrackWidget.TrackWidget()
+        # Shared per-conversion data bus, injected by the converter window; a
+        # standalone construction falls back to its own instance.
+        self.obj_trac = track if track is not None else \
+            TrackWidget.TrackWidget()
 
         # Row and column count
         self.row = 0
@@ -63,6 +68,9 @@ class DeviceModel(QtWidgets.QWidget):
         self.devicemodel_dict_end = {}
         # List to hold information about device
         self.deviceDetail = {}
+        # (model_name, ModelGroupWidget) per group built by eSim_general_libs;
+        # used for cross-project model_cache hints. Empty for sky130/ihp.
+        self._groups = []
 
         # Set Layout
         self.grid = QtWidgets.QGridLayout()
@@ -110,15 +118,20 @@ class DeviceModel(QtWidgets.QWidget):
 
         for child in self.root:
             if child.tag == "scmode1":
-                if child[0].text \
-                   and os.path.exists(child[0].text):
+                # An empty <scmode1/> prevvalues node (no children) used to
+                # IndexError at child[0]. Treat a missing or
+                # non-existent stored path as "use the default library path".
+                try:
+                    stored_path = child[0].text
+                except (IndexError, AttributeError):
+                    stored_path = None
+                if stored_path and os.path.exists(stored_path):
                     self.entry_var[self.count] \
-                        .setText(child[0].text)
-                    path_name = child[0].text
+                        .setText(stored_path)
+                    path_name = stored_path
                 else:
                     if os.name == 'nt':
-                        path_name = os.path.abspath(
-                            "library/" +
+                        path_name = paths.library_path(
                             "sky130_fd_pr/models/sky130.lib.spice"
                         )
                     else:
@@ -146,15 +159,23 @@ class DeviceModel(QtWidgets.QWidget):
         sky130grid.addWidget(self.parameterLabel[self.count], self.row, 0)
         self.entry_var[self.count] = QtWidgets.QLineEdit()
         self.entry_var[self.count].setText("")
-        self.entry_var[self.count].setMaximumWidth(150)
+        self.entry_var[self.count].setMaximumWidth(zoom_px(150))
         self.entry_var[self.count].setObjectName("%d" % beg)
         path_name = ''
         for child in self.root:
             if child.tag == "scmode1":
-                if child[1].text:
+                # child[1] is the stored corner, child[0] its library path.
+                # A scmode1 node with fewer children used to IndexError
+                # here. Fall back to a blank corner field.
+                try:
+                    stored_corner = child[1].text
+                    stored_path = child[0].text
+                except (IndexError, AttributeError):
+                    stored_corner = stored_path = None
+                if stored_corner:
                     self.entry_var[self.count] \
-                        .setText(child[1].text)
-                    path_name = child[0].text
+                        .setText(stored_corner)
+                    path_name = stored_path
                 else:
                     self.entry_var[self.count].setText("")
 
@@ -163,12 +184,7 @@ class DeviceModel(QtWidgets.QWidget):
         self.trackLibraryWithoutButton(beg, path_name)
 
         sky130box.setLayout(sky130grid)
-        sky130box.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius:\
-                 9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
+        sky130box.setProperty("cssClass", "themedGroupBox")
         self.grid.addWidget(sky130box)
         # if self.entry_var[self.count-3].text() == "":
         #    pass
@@ -183,6 +199,10 @@ class DeviceModel(QtWidgets.QWidget):
             print("=========================================")
             print(eachline)
             words = eachline.split()
+            # A blank schematicInfo line makes eachline[0] IndexError in the
+            # designator test below; skip it.
+            if not eachline.strip():
+                continue
             # supporteddesignator = ['sc', 'u', 'x', 'v', 'i', 'a']
             if eachline[0:2] != 'sc' and eachline[0] != 'u' \
                     and eachline[0] != 'x' and eachline[0] != '*'\
@@ -192,7 +212,7 @@ class DeviceModel(QtWidgets.QWidget):
 'x', 'v', 'i', 'a'\
                      can be used with SKY130 mode")
                 print("Please remove other components")
-                self.msg = QtWidgets.QErrorMessage()
+                self.msg = Dialogs.make_error_message(self)
                 self.msg.setModal(True)
                 self.msg.setWindowTitle("Invalid components")
                 self.content = "Only components with designators " + \
@@ -222,17 +242,12 @@ class DeviceModel(QtWidgets.QWidget):
                     self.parameterLabel[self.count], self.row, 0)
                 self.entry_var[self.count] = QtWidgets.QLineEdit()
                 self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setMaximumWidth(1000)
+                self.entry_var[self.count].setMaximumWidth(zoom_px(1000))
                 self.entry_var[self.count].setObjectName("%d" % beg)
                 sky130grid.addWidget(self.entry_var[self.count], self.row, 1)
                 self.entry_var[self.count].textChanged.connect(self.textChange)
                 sky130box.setLayout(sky130grid)
-                sky130box.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius: \
-                9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
+                sky130box.setProperty("cssClass", "themedGroupBox")
                 try:
                     for child in self.root:
                         if child.tag == words[0]:
@@ -246,10 +261,10 @@ class DeviceModel(QtWidgets.QWidget):
                                 else:
                                     self.entry_var[self.count].setText("")
                                     path_name = ""
-                            except BaseException as e:
+                            except Exception as e:
                                 print("Error when set text of Device " +
                                       "SKY130 Component :", str(e))
-                except BaseException:
+                except Exception:
                     pass
                 self.trackLibraryWithoutButton(self.count, path_name)
                 self.grid.addWidget(sky130box)
@@ -261,7 +276,6 @@ class DeviceModel(QtWidgets.QWidget):
                 self.devicemodel_dict_end[words[0]] = self.count
                 self.count = self.count + 1
 
-            self.show()
 
     def eSim_ihp(self, schematicInfo):
         """
@@ -393,7 +407,7 @@ class DeviceModel(QtWidgets.QWidget):
                         if child[0].text and os.path.exists(child[0].text):
                             self.entry_var[self.count].setText(child[0].text)
                             lib_path_set = True
-                    except:
+                    except (IndexError, AttributeError):
                         pass
             
             # If no previous value, auto-fill with default path
@@ -440,7 +454,7 @@ class DeviceModel(QtWidgets.QWidget):
                             idx = corner_combo.findText(child[1].text)
                             if idx >= 0:
                                 corner_combo.setCurrentIndex(idx)
-                    except:
+                    except (IndexError, AttributeError):
                         pass
             
             corner_combo.currentTextChanged.connect(self.ihpCornerChanged)
@@ -464,7 +478,7 @@ class DeviceModel(QtWidgets.QWidget):
                     try:
                         if child[2].text:
                             param_entry.setText(child[2].text)
-                    except:
+                    except (IndexError, AttributeError):
                         pass
             
             param_entry.textChanged.connect(self.ihpParamChanged)
@@ -479,19 +493,13 @@ class DeviceModel(QtWidgets.QWidget):
                 self.obj_trac.deviceModelTrack[device_ref] = f"{lib_path}:{corner}:{params}"
             
             ihpbox.setLayout(ihpgrid)
-            ihpbox.setStyleSheet("""
-                QGroupBox { border: 1px solid #4a86c7; border-radius: 9px;
-                            margin-top: 0.5em; background-color: #f0f8ff; }
-                QGroupBox::title { subcontrol-origin: margin; left: 10px;
-                                  padding: 0 3px 0 3px; color: #2c5aa0; }
-            """)
+            ihpbox.setProperty("cssClass", "ihpGroup")
             self.grid.addWidget(ihpbox)
             
             self.row += 1
             self.devicemodel_dict_end[device_ref] = self.count
             self.count += 1
             
-        self.show()
 
     def trackDefaultIHPDeviceLib(self):
         """Set default IHP PDK library path for a specific device."""
@@ -567,433 +575,173 @@ class DeviceModel(QtWidgets.QWidget):
         if lib_path:
             self.obj_trac.deviceModelTrack[self.deviceName] = f"{lib_path}:{corner}:{params}"
 
+    # --- General device-model libraries: grouped by shared model ------------
+    #
+    # Instances that reference the same model (e.g. five eSim_NPN transistors)
+    # are shown as ONE ModelGroupWidget: assign the library once and it fans out
+    # to every instance, with per-instance override still available. The
+    # per-instance QLineEdits stay registered in entry_var / devicemodel_dict_*
+    # exactly as before, so the three downstream consumers (Convert, the
+    # callConvert Previous_Values writer, and tab reload) are unchanged.
+
+    _KIND_LABEL = {
+        'q': 'Transistor', 'd': 'Diode', 'j': 'JFET',
+        's': 'Switch', 'm': 'MOSFET',
+    }
+
     def eSim_general_libs(self, schematicInfo):
-        for eachline in schematicInfo:
-            print("=========================================")
-            print(eachline)
-            words = eachline.split()
-            if eachline[0] == 'q' and len(words) > 4:
-                # print("Device Model Transistor: ", words[0])
-                self.devicemodel_dict_beg[words[0]] = self.count
-                transbox = QtWidgets.QGroupBox()
-                transgrid = QtWidgets.QGridLayout()
-                transbox.setTitle(
-                    "Add library for Transistor " +
-                    words[0] +
-                    " : " +
-                    words[4])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setReadOnly(True)
-                global path_name
+        components = ModelGrouping.parse_device_components(schematicInfo)
+        groups = ModelGrouping.group_by_model(components)
 
-                try:
-                    for child in self.root:
-                        if child.tag == words[0]:
-                            # print("DEVICE MODEL MATCHING---", \
-                            #       child.tag, words[0])
-                            try:
-                                if child[0].text \
-                                   and os.path.exists(child[0].text):
-                                    self.entry_var[self.count] \
-                                        .setText(child[0].text)
-                                    path_name = child[0].text
-                                else:
-                                    self.entry_var[self.count].setText("")
-                            except BaseException as e:
-                                print("Error when set text of device " +
-                                      "model transistor :", str(e))
-                except BaseException:
-                    pass
-
-                transgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                self.addbtn.clicked.connect(self.trackLibrary)
-                self.deviceDetail[self.count] = words[0]
-
-                if self.entry_var[self.count].text() == "":
-                    pass
-                else:
-                    self.trackLibraryWithoutButton(self.count, path_name)
-
-                transgrid.addWidget(self.addbtn, self.row, 2)
-                transbox.setLayout(transgrid)
-
-                # CSS
-                transbox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius: \
-                9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
-
-                self.grid.addWidget(transbox)
-
-                # Adding Device Details #
-
-                # Increment row and widget count
-                self.row = self.row + 1
-                self.devicemodel_dict_end[words[0]] = self.count
-                self.count = self.count + 1
-
-            elif eachline[0] == 'd' and len(words) > 3:
-                # print("Device Model Diode:", words[0])
-                self.devicemodel_dict_beg[words[0]] = self.count
-                diodebox = QtWidgets.QGroupBox()
-                diodegrid = QtWidgets.QGridLayout()
-                diodebox.setTitle(
-                    "Add library for Diode " +
-                    words[0] +
-                    " : " +
-                    words[3])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setReadOnly(True)
-                # global path_name
-                try:
-                    for child in self.root:
-                        if child.tag == words[0]:
-                            # print("DEVICE MODEL MATCHING---", \
-                            #       child.tag, words[0])
-                            try:
-                                if child[0].text \
-                                   and os.path.exists(child[0].text):
-                                    path_name = child[0].text
-                                    self.entry_var[self.count] \
-                                        .setText(child[0].text)
-                                else:
-                                    self.entry_var[self.count].setText("")
-                            except BaseException as e:
-                                print("Error when set text of device " +
-                                      "model diode :", str(e))
-                except BaseException:
-                    pass
-
-                diodegrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                self.addbtn.clicked.connect(self.trackLibrary)
-                self.deviceDetail[self.count] = words[0]
-
-                if self.entry_var[self.count].text() == "":
-                    pass
-                else:
-                    self.trackLibraryWithoutButton(self.count, path_name)
-
-                diodegrid.addWidget(self.addbtn, self.row, 2)
-                diodebox.setLayout(diodegrid)
-
-                # CSS
-                diodebox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius: \
-                9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
-
-                self.grid.addWidget(diodebox)
-
-                # Adding Device Details #
-
-                # Increment row and widget count
-                self.row = self.row + 1
-                self.devicemodel_dict_end[words[0]] = self.count
-                self.count = self.count + 1
-
-            elif eachline[0] == 'j' and len(words) > 4:
-                # print("Device Model JFET:", words[0])
-                self.devicemodel_dict_beg[words[0]] = self.count
-                jfetbox = QtWidgets.QGroupBox()
-                jfetgrid = QtWidgets.QGridLayout()
-                jfetbox.setTitle(
-                    "Add library for JFET " +
-                    words[0] +
-                    " : " +
-                    words[4])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setReadOnly(True)
-                # global path_name
-                try:
-                    for child in self.root:
-                        if child.tag == words[0]:
-                            # print("DEVICE MODEL MATCHING---", \
-                            #       child.tag, words[0])
-                            try:
-                                if child[0].text \
-                                   and os.path.exists(child[0].text):
-                                    self.entry_var[self.count] \
-                                        .setText(child[0].text)
-                                    path_name = child[0].text
-                                else:
-                                    self.entry_var[self.count].setText("")
-                            except BaseException as e:
-                                print("Error when set text of Device " +
-                                      "Model JFET :", str(e))
-                except BaseException:
-                    pass
-
-                jfetgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                self.addbtn.clicked.connect(self.trackLibrary)
-                self.deviceDetail[self.count] = words[0]
-
-                if self.entry_var[self.count].text() == "":
-                    pass
-                else:
-                    self.trackLibraryWithoutButton(self.count, path_name)
-
-                jfetgrid.addWidget(self.addbtn, self.row, 2)
-                jfetbox.setLayout(jfetgrid)
-
-                # CSS
-                jfetbox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius:\
-                 9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
-
-                self.grid.addWidget(jfetbox)
-
-                # Adding Device Details #
-                # Increment row and widget count
-                self.row = self.row + 1
-                self.devicemodel_dict_end[words[0]] = self.count
-                self.count = self.count + 1
-
-            elif eachline[0] == 's' and len(words) > 5:
-                # print("Device Model Switch:", words[0])
-                self.devicemodel_dict_beg[words[0]] = self.count
-                switchbox = QtWidgets.QGroupBox()
-                switchgrid = QtWidgets.QGridLayout()
-                switchbox.setTitle(
-                    "Add library for Switch " +
-                    words[0] +
-                    " : " +
-                    words[5])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                # global path_name
-                try:
-                    for child in root:
-                        if child.tag == words[0]:
-                            # print("DEVICE MODEL MATCHING---", \
-                            #       child.tag, words[0])
-                            try:
-                                if child[0].text \
-                                   and os.path.exists(child[0].text):
-                                    path_name = child[0].text
-                                    self.entry_var[self.count] \
-                                        .setText(child[0].text)
-                                else:
-                                    self.entry_var[self.count].setText("")
-                            except BaseException as e:
-                                print("Error when set text of device " +
-                                      "model switch :", str(e))
-                except BaseException:
-                    pass
-
-                switchgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                self.addbtn.clicked.connect(self.trackLibrary)
-                self.deviceDetail[self.count] = words[0]
-
-                if self.entry_var[self.count].text() == "":
-                    pass
-                else:
-                    self.trackLibraryWithoutButton(self.count, path_name)
-
-                switchgrid.addWidget(self.addbtn, self.row, 2)
-                switchbox.setLayout(switchgrid)
-
-                # CSS
-                switchbox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius: \
-                9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
-
-                self.grid.addWidget(switchbox)
-
-                # Adding Device Details #
-
-                # Increment row and widget count
-                self.row = self.row + 1
-                self.devicemodel_dict_end[words[0]] = self.count
-                self.count = self.count + 1
-
-            elif eachline[0] == 'ytxl':
-                # print("Device Model ymod:", words[0])
-                self.devicemodel_dict_beg[words[0]] = self.count
-                ymodbox = QtWidgets.QGroupBox()
-                ymodgrid = QtWidgets.QGridLayout()
-                ymodbox.setTitle(
-                    "Add library for ymod " +
-                    words[0] +
-                    " : " +
-                    words[4])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                # global path_name
-                try:
-                    for child in root:
-                        if child.tag == words[0]:
-                            # print("DEVICE MODEL MATCHING---", \
-                            #       child.tag, words[0])
-                            try:
-                                if child[0].text \
-                                   and os.path.exists(child[0].text):
-                                    path_name = child[0].text
-                                    self.entry_var[self.count] \
-                                        .setText(child[0].text)
-                                else:
-                                    self.entry_var[self.count].setText("")
-                            except BaseException as e:
-                                print("Error when set text of device " +
-                                      "model ymod :", str(e))
-                except BaseException:
-                    pass
-
-                ymodgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                self.addbtn.clicked.connect(self.trackLibrary)
-                self.deviceDetail[self.count] = words[0]
-
-                if self.entry_var[self.count].text() == "":
-                    pass
-                else:
-                    self.trackLibraryWithoutButton(self.count, path_name)
-
-                ymodgrid.addWidget(self.addbtn, self.row, 2)
-                ymodbox.setLayout(ymodgrid)
-
-                # CSS
-                ymodbox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius: \
-                9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left:\
-                 10px; padding: 0 3px 0 3px; } \
-                ")
-
-                self.grid.addWidget(ymodbox)
-
-                # Adding Device Details #
-
-                # Increment row and widget count
-                self.row = self.row + 1
-                self.devicemodel_dict_end[words[0]] = self.count
-                self.count = self.count + 1
-
-            elif eachline[0] == 'm' and len(words) > 4:
-
-                self.devicemodel_dict_beg[words[0]] = self.count
-                mosfetbox = QtWidgets.QGroupBox()
-                mosfetgrid = QtWidgets.QGridLayout()
-                i = self.count
+        for (kind, model), instances in groups.items():
+            rows = []
+            for comp in instances:
+                ref = comp.ref
                 beg = self.count
-                mosfetbox.setTitle(
-                    "Add library for MOSFET " +
-                    words[0] +
-                    " : " +
-                    words[4])
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setReadOnly(True)
-                mosfetgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.addbtn = QtWidgets.QPushButton("Add")
-                self.addbtn.setObjectName("%d" % self.count)
-                self.addbtn.clicked.connect(self.trackLibrary)
-                mosfetgrid.addWidget(self.addbtn, self.row, 2)
+                self.devicemodel_dict_beg[ref] = beg
+                self.deviceDetail[beg] = ref
 
-                # Adding Device Details
-                self.deviceDetail[self.count] = words[0]
+                lib_edit = QtWidgets.QLineEdit()
+                self.entry_var[beg] = lib_edit
+                self.count += 1
 
-                # Increment row and widget count
-                self.row = self.row + 1
-                self.count = self.count + 1
+                extras = []
+                restore_indices = [beg]
+                if kind == 'm':
+                    # W / L / M are always per-instance, never inherited.
+                    for offset, (label, default) in enumerate(
+                            (("W", "100u"), ("L", "100u"), ("M", "1")),
+                            start=1):
+                        dim_edit = QtWidgets.QLineEdit()
+                        dim_edit.setMaximumWidth(zoom_px(120))
+                        dim_edit.setPlaceholderText("default %s" % default)
+                        self.entry_var[beg + offset] = dim_edit
+                        extras.append((label, dim_edit))
+                        restore_indices.append(beg + offset)
+                        dim_edit.textChanged.connect(
+                            self._make_dim_changed(ref))
+                    self.count += 3
 
-                # Adding to get MOSFET dimension
-                self.widthLabel[self.count] = QtWidgets.QLabel(
-                    "Enter width of MOSFET " + words[0] + "(default=100u):")
-                mosfetgrid.addWidget(self.widthLabel[self.count], self.row, 0)
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setMaximumWidth(150)
-                mosfetgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.row = self.row + 1
-                self.count = self.count + 1
+                self.devicemodel_dict_end[ref] = self.count - 1
 
-                self.lengthLabel[self.count] = QtWidgets.QLabel(
-                    "Enter length of MOSFET " + words[0] + "(default=100u):")
-                mosfetgrid.addWidget(self.lengthLabel[self.count], self.row, 0)
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                self.entry_var[self.count].setMaximumWidth(150)
-                mosfetgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.row = self.row + 1
-                self.count = self.count + 1
+                # Restore remembered values (Previous_Values.xml -> self.root).
+                self._restore_device(ref, restore_indices)
+                if lib_edit.text():
+                    self._resolve_device(ref, lib_edit.text())
 
-                self.multifactorLable[self.count] = QtWidgets.QLabel(
-                    "Enter multiplicative factor of MOSFET " +
-                    words[0] + "(default=1):")
-                mosfetgrid.addWidget(
-                    self.multifactorLable[self.count], self.row, 0)
-                self.entry_var[self.count] = QtWidgets.QLineEdit()
-                self.entry_var[self.count].setText("")
-                end = self.count
-                self.entry_var[self.count].setMaximumWidth(150)
-                mosfetgrid.addWidget(self.entry_var[self.count], self.row, 1)
-                self.row = self.row + 1
-                self.devicemodel_dict_end[words[0]] = self.count
-                self.count = self.count + 1
-                mosfetbox.setLayout(mosfetgrid)
+                rows.append(InstanceRow(
+                    ref, lib_edit,
+                    browse_fn=self._browse_lib, extras=extras))
 
-                # global path_name
-                try:
-                    for child in self.root:
-                        if child.tag == words[0]:
-                            # print("DEVICE MODEL MATCHING---", \
-                            #       child.tag, words[0])
-                            while i <= end:
-                                self.entry_var[i].setText(child[i - beg].text)
-                                if (i - beg) == 0:
-                                    if os.path.exists(child[0].text):
-                                        self.entry_var[i] \
-                                            .setText(child[i - beg].text)
-                                        path_name = child[i - beg].text
-                                    else:
-                                        self.entry_var[i].setText("")
-                                i = i + 1
-                except BaseException:
-                    pass
-                # CSS
-                mosfetbox.setStyleSheet(" \
-                QGroupBox { border: 1px solid gray; border-radius:\
-                 9px; margin-top: 0.5em; } \
-                QGroupBox::title { subcontrol-origin: margin; left: \
-                10px; padding: 0 3px 0 3px; } \
-                ")
-                if self.entry_var[beg].text() == "":
-                    pass
+            title = "%s  (%s)" % (model, self._KIND_LABEL.get(kind, kind))
+            group = ModelGroupWidget(
+                title, rows,
+                resolve_fn=self._resolve_device,
+                group_browse_fn=self._browse_lib)
+            self._apply_cache_hint(model, group, rows)
+            self.grid.addWidget(group)
+            self._groups.append((model, group))
+
+        # Only this branch fills the tab with group cards (sky130 / IHP build
+        # their own boxes), so the row-share setup belongs here.
+        self.grid.setContentsMargins(10, 10, 10, 10)
+        self.grid.setVerticalSpacing(8)
+        finish_group_layout(self.grid)
+
+
+    def _apply_cache_hint(self, model, group, rows):
+        """Pre-fill a blank group default from the cross-project model_cache.
+
+        Only touches a group with no restored value and no overrides, so a
+        project's own Previous_Values always wins. modelCache.lookup already
+        drops a remembered path that does not exist on this machine, so this can
+        only ever suggest a usable, visible, editable default."""
+        if group.group_path() or any(group.is_overridden(r.ref) for r in rows):
+            return
+        hint = modelCache.lookup(model)
+        if hint:
+            group.set_group_path(hint)
+
+    def remembered_models(self):
+        """{model_name: lib_path} for groups where every instance resolved to
+        the same non-empty library. Fed to modelCache after a successful
+        convert. MOSFET W/L/M are separate per-instance fields and are not part
+        of the model->library mapping."""
+        out = {}
+        for model, group in self._groups:
+            vals = set(group.resolved().values())
+            if len(vals) == 1:
+                path = next(iter(vals))
+                if path:
+                    out[model] = path
+        return out
+
+    def _make_dim_changed(self, ref):
+        """A MOSFET W/L/M edit changed: refresh that instance's tracked value
+        (the library path is read back from the instance's path field)."""
+        def handler(_text):
+            beg = self.devicemodel_dict_beg[ref]
+            self._resolve_device(ref, self.entry_var[beg].text())
+        return handler
+
+    def _browse_lib(self):
+        """Open the device-library file picker; return the chosen path or ''."""
+        return QtCore.QDir.toNativeSeparators(
+            QtWidgets.QFileDialog.getOpenFileName(
+                self, "Open Library Directory",
+                paths.library_path("deviceModelLibrary"), "*.lib")[0])
+
+    def _resolve_device(self, ref, path):
+        """Write one instance's selection into deviceModelTrack -- the same
+        per-ref entry Convert reads. An empty path removes the entry, so an
+        unfilled instance is never emitted (matching the legacy behaviour)."""
+        track = self.obj_trac.deviceModelTrack
+        if not path:
+            track.pop(ref, None)
+            return
+        beg = self.devicemodel_dict_beg[ref]
+        if ref[0] == 'm':
+            width = self.entry_var[beg + 1].text() or "100u"
+            length = self.entry_var[beg + 2].text() or "100u"
+            mult = self.entry_var[beg + 3].text() or "1"
+            track[ref] = "%s:W=%s L=%s M=%s" % (path, width, length, mult)
+        else:
+            track[ref] = path
+
+    def _restore_device(self, ref, indices):
+        """Refill an instance's widgets from self.root (Previous_Values.xml).
+
+        Field 0 is the library path and is dropped if it no longer exists on
+        this machine (the leak guard, now applied to every device kind --
+        previously the switch/ymod branches referenced an undefined ``root``
+        and silently restored nothing). The remaining fields (MOSFET W/L/M)
+        restore verbatim.
+        """
+        node = None
+        for child in self.root:
+            if child.tag == ref:
+                node = child
+                break
+        if node is None:
+            return
+        for field, idx in enumerate(indices):
+            try:
+                text = node[field].text or ""
+            except IndexError:
+                continue
+            if field == 0:
+                if text and os.path.exists(text):
+                    self.entry_var[idx].setText(text)
                 else:
-                    self.trackLibraryWithoutButton(beg, path_name)
-
-                self.grid.addWidget(mosfetbox)
-
-            self.show()
+                    self.entry_var[idx].setText("")
+            else:
+                self.entry_var[idx].setText(text)
 
     def trackDefaultLib(self):
         sending_btn = self.sender()
         self.widgetObjCount = int(sending_btn.objectName())
         if os.name == 'nt':
-            path_name = os.path.abspath(
-                "library/" +
+            path_name = paths.library_path(
                 "sky130_fd_pr/models/sky130.lib.spice"
             )
         else:
@@ -1056,14 +804,10 @@ class DeviceModel(QtWidgets.QWidget):
         sending_btn = self.sender()
         self.widgetObjCount = int(sending_btn.objectName())
 
-        init_path = '../../'
-        if os.name == 'nt':
-            init_path = ''
-
         self.libfile = QtCore.QDir.toNativeSeparators(
             QtWidgets.QFileDialog.getOpenFileName(
                 self, "Open Library Directory",
-                init_path + "library/deviceModelLibrary", "*.lib"
+                paths.library_path("deviceModelLibrary"), "*.lib"
             )[0]
         )
 
@@ -1163,12 +907,11 @@ class DeviceModel(QtWidgets.QWidget):
 
         kicadFile = self.clarg1
         (projpath, filename) = os.path.split(kicadFile)
-        analysisfile = open(os.path.join(projpath, filename))
-        # analysisfile = open(os.path.join(projpath, 'analysis'))
-        content = analysisfile.read()
+        # Read the netlist and close the handle immediately rather than leaking
+        # it until GC; the output file is opened at the end under a `with` too.
+        with open(os.path.join(projpath, filename)) as analysisfile:
+            content = analysisfile.read()
         contentlines = content.split("\n")
-        parsedfile = open(os.path.join(projpath, filename+'.parsed.v'), 'w')
-        parsedfile.write("")
         # print("module "+filename)
         i = 1
         inputlist = []
@@ -1259,13 +1002,15 @@ Converter developed at FOSSEE, IIT Bombay\n")
 
         print('\n**************Generated Verilog File: ' +
               filename + '.parsed.v***************\n')
-        for j in parsedcontent:
-            print(j)
-            parsedfile.write(j+"\n")
+        parsed_path = os.path.join(projpath, filename + '.parsed.v')
+        with open(parsed_path, 'w') as parsedfile:
+            for j in parsedcontent:
+                print(j)
+                parsedfile.write(j + "\n")
         print(
             '\n*************************************\
 ************************************\n')
-        self.msg = QtWidgets.QErrorMessage()
+        self.msg = Dialogs.make_error_message(self)
         self.msg.setModal(True)
         self.msg.setWindowTitle("Verilog File Generated")
         self.content = "The Verilog file has been successfully \

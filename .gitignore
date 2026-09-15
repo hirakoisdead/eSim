@@ -18,3 +18,27 @@ nghdl*
 tags
 build/
 dist/
+
+# Simulation / KiCad run artifacts
+*.raw
+*.kicad_prl
+*.lck
+_autosave-*
+*auto_saved_files*
+*-rescue.lib
+*-rescue.dcm
+rescue-backup/
+
+# macOS Finder droppings: four were committed under nghdl/ once already
+.DS_Store
+
+# nghdl build/cache artifacts (re-ignored after the !nghdl/** negation above)
+nghdl/**/__pycache__/
+nghdl/src/xspice/
+nghdl/*.tar.xz
+
+# Bundled runtime staged into the repo root by the Windows installer build:
+# the embedded CPython and the KiCad/msys64/nghdl toolchain. Third-party trees,
+# hundreds of MB, rebuilt by windows/build -- never source.
+/python/
+/tools/

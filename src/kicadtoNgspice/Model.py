@@ -1,10 +1,10 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-import os
 from xml.etree import ElementTree as ET
 from PyQt6 import QtWidgets
 
 from . import TrackWidget
+from projManagement.projectPaths import previous_values_path
 
 
 class Model(QtWidgets.QWidget):
@@ -17,18 +17,23 @@ class Model(QtWidgets.QWidget):
             schematicInfo,
             modelList,
             clarg1,
+            track=None,
     ):
 
         QtWidgets.QWidget.__init__(self)
 
         # Processing for getting previous values
         kicadFile = clarg1
-        (projpath, filename) = os.path.split(kicadFile)
-        project_name = os.path.basename(projpath)
         check = 1
+        # Pre-bind the restore node so ``root`` is always defined even when the
+        # prev-values XML is missing or has no <model> child; the restore loops
+        # below then simply skip. Previously ``root`` was only bound inside the
+        # try, so a bare access outside the swallowing try/except would raise
+        # UnboundLocalError.
+        root = None
         try:
             f = open(
-                os.path.join(projpath, project_name + "_Previous_Values.xml"),
+                previous_values_path(kicadFile),
                 "r",
             )
             tree = ET.parse(f)
@@ -36,11 +41,13 @@ class Model(QtWidgets.QWidget):
             for child in parent_root:
                 if child.tag == "model":
                     root = child
-        except BaseException:
+        except Exception:
             check = 0
 
-        # Creating track widget object
-        self.obj_trac = TrackWidget.TrackWidget()
+        # Shared per-conversion data bus, injected by the converter window; a
+        # standalone construction falls back to its own instance.
+        self.obj_trac = track if track is not None else \
+            TrackWidget.TrackWidget()
 
         # for increasing row and counting/tracking line edit widget
         self.nextrow = 0
@@ -89,11 +96,11 @@ class Model(QtWidgets.QWidget):
 
                         # load any previous XML value
                         try:
-                            for child in root:
+                            for child in root if root is not None else []:
                                 if child.text == line[2] and child.tag == line[3]:
                                     le.setText(child[i].text)
                                     i += 1
-                        except BaseException:
+                        except Exception:
                             pass
 
                         # add exactly one widget per row
@@ -115,11 +122,11 @@ class Model(QtWidgets.QWidget):
                     le.setText("")
 
                     try:
-                        for child in root:
+                        for child in root if root is not None else []:
                             if child.text == line[2] and child.tag == line[3]:
                                 le.setText(child[i].text)
                                 i += 1
-                    except BaseException:
+                    except Exception:
                         pass
 
                     modelgrid.addWidget(le, self.nextrow, 1)
@@ -162,23 +169,3 @@ class Model(QtWidgets.QWidget):
                     check = 1
             if check == 0:
                 self.obj_trac.modelTrack.append(lst)
-
-        self.show()
-
-    def add_hex_btn(self, modelgrid, modelbox):
-        self.addbtn = QtWidgets.QPushButton("Add Hex File")
-        self.addbtn.setObjectName("%d" % self.nextcount)
-        self.addbtn.clicked.connect(self.addHex)
-        modelgrid.addWidget(self.addbtn, self.nextrow, 2)
-        modelbox.setLayout(modelgrid)
-
-        # CSS
-        modelbox.setStyleSheet(
-            " \
-        QGroupBox { border: 1px solid gray; border-radius:\
-        9px; margin-top: 0.5em; } \
-        QGroupBox::title { subcontrol-origin: margin; left:\
-        10px; padding: 0 3px 0 3px; } \
-        "
-        )
-        self.grid.addWidget(modelbox)

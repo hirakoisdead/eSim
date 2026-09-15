@@ -1,10 +1,8 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from PyQt6.QtWidgets import QMenu
 from PyQt6.QtCore import Qt
 from PyQt6 import QtCore
-from matplotlib.lines import Line2D
-from .constants import (MIN_STACKED_PANE_HEIGHT_PX, DIVIDER_HIT_TOLERANCE_PX,
-                        STACKED_REFRESH_DEBOUNCE_MS)
+from .constants import (MIN_STACKED_PANE_HEIGHT_PX, DIVIDER_HIT_TOLERANCE_PX)
 
 
 class _PaneMixin:
@@ -45,23 +43,43 @@ class _PaneMixin:
         self._set_canvas_height_for_panes(n)
         return self.panes
 
-    def _set_canvas_height_for_panes(self, n: int) -> None:
+    def _set_canvas_height_for_panes(self, n: int) -> Optional[float]:
         """Force canvas tall enough for N stacked panes; let it shrink elsewhere.
 
         Without this, QScrollArea.widgetResizable=True squashes the canvas
         to the viewport even when N=20. We set a min-height proportional
         to pane count so the scroll bar appears as soon as panes would
         otherwise become unreadable.
+
+        Returns old_height / new_height when the canvas is headed for a
+        different size (None when it isn't). Multiplying a figure-fraction
+        length by that ratio holds its pixel size across the resize, which is
+        what pixel-sized decorations — tick labels, the per-pane title — need.
+
+        The comparison runs against self._canvas_effective_h, updated here,
+        rather than canvas.height(): Qt applies setMinimumHeight on the next
+        layout pass, so a burst of toggles all read the same pre-burst widget
+        height and every ratio after the first would be wrong. Bookkeeping
+        telescopes correctly however far the event loop lags behind.
         """
         if not hasattr(self, 'canvas_scroll') or not hasattr(self, 'canvas'):
-            return
+            return None
         viewport_h = self.canvas_scroll.viewport().height()
         if self._current_view_mode == 'stacked' and n > 1:
             wanted = max(viewport_h, int(n * MIN_STACKED_PANE_HEIGHT_PX))
-            self.canvas.setMinimumHeight(wanted)
         else:
             # Non-stacked modes fit the viewport — drop the floor.
-            self.canvas.setMinimumHeight(0)
+            wanted = 0
+        if wanted != self.canvas.minimumHeight():
+            self.canvas.setMinimumHeight(wanted)
+        # widgetResizable(True) grows the canvas to the viewport, so the height
+        # it will settle at is the floor or the viewport, whichever is larger.
+        effective = float(max(wanted, viewport_h))
+        previous = self._canvas_effective_h
+        self._canvas_effective_h = effective
+        if previous <= 0 or effective <= 0 or abs(previous - effective) < 0.5:
+            return None
+        return previous / effective
 
     def _sync_pane_groups_to_visible(self) -> None:
         """Reconcile self._pane_groups + heights with current visibility.

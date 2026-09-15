@@ -4,76 +4,74 @@ eSim installation instructions
 
 Table of contents
 
-    1.  eSim installation via Flatpak (All Linux distributions - RECOMMENDED)
+    1.  eSim installation in Ubuntu OS (LINUX)
    
-    2.  eSim installation in Ubuntu OS (LINUX)
-   
-    3.  eSim installation in Microsoft Windows OS
+    2.  eSim installation in Microsoft Windows OS
 
 
-1.  eSim installation via Flatpak (Fedora, Ubuntu, openSUSE, Arch, etc.)
+1.  eSim installation in Ubuntu OS
 
-    The Flatpak method works on all major Linux distributions including
-    Fedora, Ubuntu, Debian, openSUSE, Arch Linux, and others.
+    Supported releases: Ubuntu 23.04 / 24.04 / 25.04 / 26.04 (64-bit).
+    One unified installer auto-detects the Ubuntu version — there are no
+    per-version scripts to pick.
 
-    i.      Install Flatpak if not already installed:
-    
-            On Fedora:      $ sudo dnf install flatpak
-            On Ubuntu:      $ sudo apt install flatpak
-            On openSUSE:    $ sudo zypper install flatpak
-            On Arch:        $ sudo pacman -S flatpak
-    
-    ii.     Add the Flathub repository (if not already added):
-    
-            $ flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-    
-    iii.    Install eSim:
-    
-            When available on Flathub:
-            $ flatpak install flathub org.fossee.eSim
-    
-            Or build from source:
-            $ cd eSim
-            $ flatpak-builder build flatpak/org.fossee.eSim.yml --install --user
-    
-    iv.     (Optional) Install KiCad for schematic editing:
-    
-            $ flatpak install flathub org.kicad.KiCad
-    
-    v.      Run eSim:
-    
-            $ flatpak run org.fossee.eSim
-    
-            Or launch from your application menu.
+    Quick install (one line, no manual download)
+    --------------------------------------------
+    Open a terminal and paste:
 
-    Flatpak limitations:
-    --------------------
-    - NGHDL and Makerchip are not included. For full NGHDL/Modelica support,
-      use the Ubuntu native installer.
-    - SKY130 PDK is not bundled. Use the Ubuntu installer for mixed-signal
-      design with SKY130.
-    - xterm and gaw are not included; external waveform viewer features may
-      require xterm installed on the host system.
-    - NGHDL KiCad symbol creation (createkicad) may not work fully due to
-      sandbox restrictions on writing to KiCad's symbol directory.
+        $ curl -fsSL https://raw.githubusercontent.com/FOSSEE/eSim/v2.6/Ubuntu/bootstrap.sh \
+            | ESIM_BRANCH=v2.6 bash
 
+    This pins both the bootstrap script and downloaded source to eSim 2.6 and
+    runs the same installer described below. The command becomes available
+    after FOSSEE tags the merged commit as v2.6.
 
-2.  eSim installation in Ubuntu OS
-    
-   	i.      After downloading eSim, extract it using: 
-  
-   		       $ unzip eSim-2.5.zip
+    For a moving development snapshot, use:
+
+        $ curl -fsSL https://raw.githubusercontent.com/FOSSEE/eSim/master/Ubuntu/bootstrap.sh | bash
+
+    Already have an OLDER eSim (2.x) on this machine? Run the stable command —
+    the installer detects and sweeps old-eSim artifacts (stale launchers,
+    old KiCad apt sources, the /usr/local GHDL old nghdl built) and installs
+    cleanly on top. There is no need to uninstall first, and two eSim
+    versions cannot coexist on one machine. Your old extracted eSim
+    directory is never deleted, just no longer used.
+
+    It can also uninstall or preview:
+
+        $ curl -fsSL https://raw.githubusercontent.com/FOSSEE/eSim/v2.6/Ubuntu/bootstrap.sh | ESIM_BRANCH=v2.6 bash -s -- --uninstall
+        $ curl -fsSL https://raw.githubusercontent.com/FOSSEE/eSim/v2.6/Ubuntu/bootstrap.sh | ESIM_BRANCH=v2.6 bash -s -- --dry-run
+
+    Manual install (downloaded zip)
+    -------------------------------
+   	i.      After downloading eSim, extract it using:
+
+   		       $ unzip eSim-2.6-ubuntu.zip
 
    	ii.     Now change directories in to the top-level eSim directory (where this INSTALL file can be found).
 
-   	iii.    To install eSim and other dependencies, run the following command :
+   	iii.    (Optional) Preview exactly what will be installed for your Ubuntu
+   	        version, without changing anything:
 
    		       $ chmod +x install-eSim.sh
+   		       $ ./install-eSim.sh --dry-run
+
+   	iv.     To install eSim and other dependencies, run:
+
    		       $ ./install-eSim.sh --install
 
-   	iv.     To uninstall eSim and all of its components, run the following command :
+   	v.      To uninstall eSim and all of its components, run:
 
    		       $ ./install-eSim.sh --uninstall
+
+   	        The installer is idempotent: re-running --install over an existing
+   	        eSim (any prior version) reinstalls cleanly, and --uninstall is
+   	        version-agnostic.
+
+   	Note (developers): in the source tree the installer lives at
+   	Ubuntu/install-eSim.sh and runs against the working tree directly. To cut a
+   	frozen, self-contained release zip from the current tree, run
+   	./make-release.sh (output in dist/).
 
 
    How to Run eSim
@@ -86,7 +84,7 @@ Table of contents
     B.  Double click eSim desktop icon
 
 
-3.  eSim installation in Windows OS
+2.  eSim installation in Windows OS
 
      i.     Download eSim for Windows OS from "https://esim.fossee.in/". Disable the antivirus (if any).
 
@@ -104,6 +102,4 @@ Table of contents
 
 Note
 ======
-- Flatpak is the recommended method for Fedora, openSUSE, Arch, and other
-  non-Ubuntu Linux distributions.
 - Please report any eSim installation related issue/error at "https://forums.fossee.in/"
