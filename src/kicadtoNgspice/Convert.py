@@ -2,9 +2,22 @@ import os
 import shutil
 from xml.etree import ElementTree as ET
 
-from PyQt6 import QtWidgets
+from configuration import Dialogs
 
 from . import TrackWidget
+from maker import CosimConfig
+from maker.CosimLogger import CosimLog
+
+
+def _star_encode(path):
+    """Wrap every uppercase char as ``*C**`` to protect it from the netlist
+    lowercasing (the decoder on the ngspice/nghdl side expects this framing).
+
+    A single linear pass -- the old code called ``path.index(c)`` which returns
+    the *first* occurrence, so a path with a repeated uppercase letter (e.g.
+    ``/home/U/ADC/ADC.hex``) computed the wrong insertion point and corrupted.
+    """
+    return ''.join('*' + c + '**' if c.isupper() else c for c in path)
 
 
 class Convert:
@@ -22,12 +35,33 @@ class Convert:
     """
 
     def __init__(self, sourcelisttrack, source_entry_var,
-                 schematicInfo, clarg1):
+                 schematicInfo, clarg1, track=None):
         self.sourcelisttrack = sourcelisttrack
         self.schematicInfo = schematicInfo
         self.entry_var = source_entry_var
         self.sourcelistvalue = []
         self.clarg1 = clarg1
+        self.errors = []
+        # The converter's shared data bus, injected by the converter window so
+        # every tab and this Convert read/write the same instance. A standalone
+        # construction (e.g. tests exercising a single method) falls back to a
+        # private instance.
+        self.obj_track = track if track is not None else \
+            TrackWidget.TrackWidget()
+
+    def _record_error(self, component, exc):
+        """Collect one component failure so conversion can abort as a unit."""
+        message = f"{component}: {exc}"
+        self.errors.append(message)
+        print("Conversion error:", message)
+
+    def raise_for_errors(self):
+        """Abort before output is written when any component was incomplete."""
+        if self.errors:
+            details = "\n".join(f"- {error}" for error in self.errors)
+            raise RuntimeError(
+                "Some components could not be converted:\n" + details
+            )
 
     def addSourceParameter(self):
         """
@@ -72,10 +106,8 @@ class Convert:
                         '(')[0] + "(" + vo_val + " " + va_val + " " + \
                         freq_val + " " + td_val + " " + theta_val + ")"
                     self.sourcelistvalue.append([self.index, self.addline])
-                except BaseException:
-                    print(
-                        "Caught an exception in sine voltage source ",
-                        self.addline)
+                except Exception as exc:
+                    self._record_error(self.addline, exc)
 
             elif compline[1] == 'pulse':
                 try:
@@ -107,10 +139,8 @@ class Convert:
                         td_val + " " + tr_val + " " + tf_val + " " + \
                         pw_val + " " + tp_val + ")"
                     self.sourcelistvalue.append([self.index, self.addline])
-                except BaseException:
-                    print(
-                        "Caught an exception in pulse voltage source ",
-                        self.addline)
+                except Exception as exc:
+                    self._record_error(self.addline, exc)
 
             elif compline[1] == 'pwl':
                 try:
@@ -121,10 +151,8 @@ class Convert:
                     self.addline = self.addline.partition(
                         '(')[0] + "(" + t_v_val + ")"
                     self.sourcelistvalue.append([self.index, self.addline])
-                except BaseException:
-                    print(
-                        "Caught an exception in pwl voltage source ",
-                        self.addline)
+                except Exception as exc:
+                    self._record_error(self.addline, exc)
 
             elif compline[1] == 'ac':
                 try:
@@ -139,10 +167,8 @@ class Convert:
                     self.addline = self.addline.partition(
                         'ac')[0] + " " + 'ac' + " " + va_val + " " + ph_val
                     self.sourcelistvalue.append([self.index, self.addline])
-                except BaseException:
-                    print(
-                        "Caught an exception in ac voltage source ",
-                        self.addline)
+                except Exception as exc:
+                    self._record_error(self.addline, exc)
 
             elif compline[1] == 'dc':
                 try:
@@ -154,10 +180,8 @@ class Convert:
                     self.addline = self.addline.partition(
                         'dc')[0] + " " + 'dc' + " " + v1_val
                     self.sourcelistvalue.append([self.index, self.addline])
-                except BaseException:
-                    print(
-                        "Caught an exception in dc voltage source",
-                        self.addline)
+                except Exception as exc:
+                    self._record_error(self.addline, exc)
 
             elif compline[1] == 'exp':
                 try:
@@ -188,10 +212,8 @@ class Convert:
                         td1_val + " " + tau1_val + " " + td2_val + \
                         " " + tau2_val + ")"
                     self.sourcelistvalue.append([self.index, self.addline])
-                except BaseException:
-                    print(
-                        "Caught an exception in exp voltage source ",
-                        self.addline)
+                except Exception as exc:
+                    self._record_error(self.addline, exc)
 
         # Updating Schematic with source value
         for item in self.sourcelistvalue:
@@ -223,108 +245,113 @@ class Convert:
         self.Fileopen = os.path.join(filepath, "analysis")
         print("======================================================")
         print("FILEOPEN CONVERT ANALYS", self.Fileopen)
-        self.writefile = open(self.Fileopen, "w")
-        if self.variable == 'AC':
-            self.no = 0
-            self.writefile.write(".ac" +
-                                 ' ' +
-                                 self.ac_type +
-                                 ' ' +
-                                 str(self.defaultvalue(
-                                     self.ac_entry_var[self.no + 2].text())) +
-                                 ' ' +
-                                 str(self.defaultvalue(
-                                     self.ac_entry_var[self.no].text())) +
-                                 self.ac_parameter[self.no] +
-                                 ' ' +
-                                 str(self.defaultvalue(
-                                     self.ac_entry_var[self.no + 1].text())) +
-                                 self.ac_parameter[self.no +
-                                                   1])
-
-        elif self.variable == 'DC':
-            if self.op_check[-1] == 1:
+        # Write inside a `with` so an indexing error mid-build can never leave
+        # the analysis file truncated-and-leaked -- a stale/empty analysis file
+        # would silently make the next run mis-detect as Transient.
+        with open(self.Fileopen, "w") as self.writefile:
+            if self.variable == 'AC':
                 self.no = 0
-                self.writefile.write(".op")
-            elif self.op_check[-1] == 0 or self.op_check[-1] == '0':
+                self.writefile.write(".ac" +
+                                     ' ' +
+                                     self.ac_type +
+                                     ' ' +
+                                     str(self.defaultvalue(
+                                         self.ac_entry_var[self.no + 2].text())) +
+                                     ' ' +
+                                     str(self.defaultvalue(
+                                         self.ac_entry_var[self.no].text())) +
+                                     self.ac_parameter[self.no] +
+                                     ' ' +
+                                     str(self.defaultvalue(
+                                         self.ac_entry_var[self.no + 1].text())) +
+                                     self.ac_parameter[self.no +
+                                                       1])
+
+            elif self.variable == 'DC':
+                # op_check can be empty if the DC widgets were never populated;
+                # default to a .dc sweep instead of raising IndexError on [-1].
+                op_flag = self.op_check[-1] if self.op_check else 0
+                if op_flag == 1:
+                    self.no = 0
+                    self.writefile.write(".op")
+                elif op_flag == 0 or op_flag == '0':
+                    self.no = 0
+                    self.writefile.write(".dc" +
+                                         ' ' +
+                                         str(self.dc_entry_var[self.no].text()) +
+                                         ' ' +
+                                         str(self.defaultvalue(
+                                             self.dc_entry_var[self.no +
+                                                               1].text())) +
+                                         self.converttosciform(
+                                             self.dc_parameter[self.no]) +
+                                         ' ' +
+                                         str(self.defaultvalue(
+                                             self.dc_entry_var[self.no +
+                                                               3].text())) +
+                                         self.converttosciform(
+                                             self.dc_parameter[self.no +
+                                                               2]) +
+                                         ' ' +
+                                         str(self.defaultvalue(
+                                             self.dc_entry_var[self.no +
+                                                               2].text())) +
+                                         self.converttosciform(
+                                             self.dc_parameter[self.no +
+                                                               1]))
+
+                    if self.dc_entry_var[self.no + 4].text():
+                        self.writefile.write(' ' +
+                                             str(self.defaultvalue(
+                                                 self.dc_entry_var[self.no +
+                                                                   4].text())) +
+                                             ' ' +
+                                             str(self.defaultvalue(
+                                                 self.dc_entry_var[self.no +
+                                                                   5].text())) +
+                                             self.converttosciform(
+                                                 self.dc_parameter[self.no +
+                                                                   3]) +
+                                             ' ' +
+                                             str(self.defaultvalue(
+                                                 self.dc_entry_var[self.no +
+                                                                   7].text())) +
+                                             self.converttosciform(
+                                                 self.dc_parameter[self.no +
+                                                                   5]) +
+                                             ' ' +
+                                             str(self.defaultvalue(
+                                                 self.dc_entry_var[self.no +
+                                                                   6].text())) +
+                                             self.converttosciform(
+                                                 self.dc_parameter[self.no +
+                                                                   4]))
+
+            elif self.variable == 'TRAN':
                 self.no = 0
-                self.writefile.write(".dc" +
-                                     ' ' +
-                                     str(self.dc_entry_var[self.no].text()) +
+                self.writefile.write(".tran" +
                                      ' ' +
                                      str(self.defaultvalue(
-                                         self.dc_entry_var[self.no +
-                                                           1].text())) +
+                                         self.tran_entry_var[self.no +
+                                                             1].text())) +
                                      self.converttosciform(
-                                         self.dc_parameter[self.no]) +
+                                         self.trans_parameter[self.no +
+                                                              1]) +
                                      ' ' +
                                      str(self.defaultvalue(
-                                         self.dc_entry_var[self.no +
-                                                           3].text())) +
+                                         self.tran_entry_var[self.no +
+                                                             2].text())) +
                                      self.converttosciform(
-                                         self.dc_parameter[self.no +
-                                                           2]) +
+                                         self.trans_parameter[self.no +
+                                                              2]) +
                                      ' ' +
                                      str(self.defaultvalue(
-                                         self.dc_entry_var[self.no +
-                                                           2].text())) +
+                                         self.tran_entry_var[self.no].text())) +
                                      self.converttosciform(
-                                         self.dc_parameter[self.no +
-                                                           1]))
+                                         self.trans_parameter[self.no]))
 
-                if self.dc_entry_var[self.no + 4].text():
-                    self.writefile.write(' ' +
-                                         str(self.defaultvalue(
-                                             self.dc_entry_var[self.no +
-                                                               4].text())) +
-                                         ' ' +
-                                         str(self.defaultvalue(
-                                             self.dc_entry_var[self.no +
-                                                               5].text())) +
-                                         self.converttosciform(
-                                             self.dc_parameter[self.no +
-                                                               3]) +
-                                         ' ' +
-                                         str(self.defaultvalue(
-                                             self.dc_entry_var[self.no +
-                                                               7].text())) +
-                                         self.converttosciform(
-                                             self.dc_parameter[self.no +
-                                                               5]) +
-                                         ' ' +
-                                         str(self.defaultvalue(
-                                             self.dc_entry_var[self.no +
-                                                               6].text())) +
-                                         self.converttosciform(
-                                             self.dc_parameter[self.no +
-                                                               4]))
-
-        elif self.variable == 'TRAN':
-            self.no = 0
-            self.writefile.write(".tran" +
-                                 ' ' +
-                                 str(self.defaultvalue(
-                                     self.tran_entry_var[self.no +
-                                                         1].text())) +
-                                 self.converttosciform(
-                                     self.trans_parameter[self.no +
-                                                          1]) +
-                                 ' ' +
-                                 str(self.defaultvalue(
-                                     self.tran_entry_var[self.no +
-                                                         2].text())) +
-                                 self.converttosciform(
-                                     self.trans_parameter[self.no +
-                                                          2]) +
-                                 ' ' +
-                                 str(self.defaultvalue(
-                                     self.tran_entry_var[self.no].text())) +
-                                 self.converttosciform(
-                                     self.trans_parameter[self.no]))
-
-        else:
-            pass
-        self.writefile.close()
+            else:
+                pass
 
     def converttosciform(self, string_obj):
         """
@@ -360,15 +387,17 @@ class Convert:
         This function adds the Ngspice Model details to schematicInfo
         """
 
-        # Create object of TrackWidget
-        self.obj_track = TrackWidget.TrackWidget()
-
         # List to store model line
         addmodelLine = []
         modelParamValue = []
 
         for line in self.obj_track.modelTrack:
             # print "Model Track :",line
+            if line[6] == "NgVeriCosim":
+                cosimLine = self._cosim_model_line(line)
+                if cosimLine:
+                    modelParamValue.append([line[0], cosimLine, line[4]])
+                continue
             if line[2] == 'transfo':
                 try:
                     start = line[7]
@@ -423,9 +452,8 @@ class Convert:
                                    num_turns2 + ")"
                     modelParamValue.append(
                         [line[0], addmodelLine, "*secondary lcouple"])
-                except Exception as e:
-                    print("Caught an exception in transfo model ", line[1])
-                    print("Exception Message : ", str(e))
+                except Exception as exc:
+                    self._record_error(line[1], exc)
 
             elif line[2] == 'ic':
                 try:
@@ -441,9 +469,8 @@ class Convert:
                         addmodelLine = ".ic v(" + node + ")=" + initVal
                         modelParamValue.append(
                             [line[0], addmodelLine, line[4]])
-                except Exception as e:
-                    print("Caught an exception in initial condition ", line[1])
-                    print("Exception Message : ", str(e))
+                except Exception as exc:
+                    self._record_error(line[1], exc)
 
             else:
                 try:
@@ -491,9 +518,8 @@ class Convert:
 
                     addmodelLine += ") "
                     modelParamValue.append([line[0], addmodelLine, line[4]])
-                except Exception as e:
-                    print("Caught an exception in model ", line[1])
-                    print("Exception Message : ", str(e))
+                except Exception as exc:
+                    self._record_error(line[1], exc)
 
         # Adding it to schematic
         for item in modelParamValue:
@@ -506,13 +532,69 @@ class Convert:
 
         return schematicInfo
 
+    def _cosim_model_line(self, line):
+        """Build the d_cosim ".model" line for an NgVeriCosim block and stage
+        its compiled Icarus vvp into the project directory.
+
+        Emits, e.g.:  .model u5 d_cosim simulation="ivlng" sim_args=["adder"]
+        where u5 is the schematic instance (line[3]) and "adder" is the Verilog
+        model name (line[2]) == the vvp basename ngspice's ivlng adapter loads.
+        ivlng resolves sim_args relative to the ngspice working directory (the
+        project dir), so the vvp is copied next to the netlist. The vvp source
+        path is derived once, from the nghdl config, via CosimConfig -- the same
+        helper the build step used, so there is a single source of truth.
+        """
+        comp_name = line[3]
+        model_name = line[2]
+        proj_dir = os.path.dirname(self.clarg1)
+
+        log = CosimLog()  # no GUI here: terminal + ~/.esim/dcosim.log only
+        vvp_src = CosimConfig.cosim_vvp_path(model_name)
+        try:
+            if vvp_src and os.path.isfile(vvp_src):
+                dst = os.path.join(proj_dir, model_name)
+                shutil.copy(vvp_src, dst)
+                log.info('d_cosim: staged vvp for "%s" -> %s' %
+                         (model_name, dst))
+            else:
+                log.error('d_cosim: compiled model "%s" not found at %s'
+                          % (model_name, vvp_src))
+                log.fix('Rebuild the model in the NgVeri tab ("Add Verilog '
+                        '(d_cosim)") before running the simulation.')
+        except OSError as e:
+            log.error('d_cosim: could not stage vvp for "%s": %s'
+                      % (model_name, str(e)))
+
+        # On Windows, ivlng's default VPI-module location is its compile-time
+        # NGSPICELIBDIR -- a build-machine path that does not exist on user
+        # installs. ivlng does add_module_path(".") (the project dir, ngspice's
+        # cwd), so stage ivlng.vpi next to the netlist like the vvp above and
+        # point lib_args[1] at the bare module name. lib_args[0] must be a
+        # non-empty value (ngspice drops empty strings from the vector,
+        # shifting the args); "libvvp" = ivlng's own default, resolved via the
+        # OS loader path the launcher already sets. Both names are relative,
+        # so the netlist stays machine-portable.
+        lib_args = ''
+        if os.name == 'nt':
+            cmdir = CosimConfig.ngspice_codemodel_dir()
+            vpi_src = os.path.join(cmdir, 'ivlng.vpi') if cmdir else None
+            try:
+                if vpi_src and os.path.isfile(vpi_src):
+                    shutil.copy(vpi_src, os.path.join(proj_dir, 'ivlng.vpi'))
+                    lib_args = 'lib_args=["libvvp", "ivlng"] '
+                else:
+                    log.error('d_cosim: ivlng.vpi not found at %s'
+                              % str(vpi_src))
+            except OSError as e:
+                log.error('d_cosim: could not stage ivlng.vpi: %s' % str(e))
+
+        return ('.model ' + comp_name + ' d_cosim simulation="ivlng" '
+                + lib_args + 'sim_args=["' + model_name + '"] ')
+
     def addMicrocontrollerParameter(self, schematicInfo):
         """
         This function adds the Microcontroller Model details to schematicInfo
         """
-
-        # Create object of TrackWidget
-        self.obj_track = TrackWidget.TrackWidget()
 
         # List to store model line
         addmodelLine = []
@@ -552,24 +634,7 @@ class Convert:
                                     [lineVar].text())
                             # Checks For 5th Parameter(Hex File Path)
                             if z == 4:
-                                chosen_file_path = paramVal
-                                star_file_path = chosen_file_path
-                                star_count = 0
-                                for c in chosen_file_path:
-                                    # If character is uppercase
-                                    if c.isupper():
-                                        c_in = chosen_file_path.index(c)
-                                        c_in += star_count
-                                        # Adding asterisks(*) to the path
-                                        # around the character
-                                        star_file_path = \
-                                            star_file_path[
-                                                :c_in] + "*" + star_file_path[
-                                                c_in] + "**" + star_file_path[
-                                                c_in + 1:]
-                                        star_count += 3
-
-                                paramVal = "\"" + star_file_path + "\""
+                                paramVal = "\"" + _star_encode(paramVal) + "\""
 
                             addmodelLine += paramVal + " "
                             z = z + 1
@@ -585,31 +650,14 @@ class Convert:
                                 [value].text())
                         # Checks For 5th Parameter(Hex File Path)
                         if z == 4:
-                            chosen_file_path = paramVal
-                            star_file_path = chosen_file_path
-                            star_count = 0
-                            for c in chosen_file_path:
-                                # If character is uppercase
-                                if c.isupper():
-                                    c_in = chosen_file_path.index(c)
-                                    c_in += star_count
-                                    # Adding asterisks(*) to the path around
-                                    # the character
-                                    star_file_path = \
-                                        star_file_path[:c_in] + "*" + \
-                                        star_file_path[c_in] + "**" + \
-                                        star_file_path[c_in + 1:]
-                                    star_count += 3
-
-                            paramVal = "\"" + star_file_path + "\""
+                            paramVal = "\"" + _star_encode(paramVal) + "\""
                         z = z + 1
                         addmodelLine += param + "=" + paramVal + " "
 
                 addmodelLine += ") "
                 modelParamValue.append([line[0], addmodelLine, line[4]])
-            except Exception as e:
-                print("Caught an exception in microcontroller ", line[1])
-                print("Exception Message : ", str(e))
+            except Exception as exc:
+                self._record_error(line[1], exc)
 
         # Adding it to schematic
         for item in modelParamValue:
@@ -702,7 +750,14 @@ class Convert:
 
                     if eachline[0] == 'm':
                         # For mosfet library name come along with MOSFET
-                        # dimension information
+                        # dimension information. A model-track entry without
+                        # the ":W=.. L=.." suffix used to IndexError here
+                        # surface it as a readable error instead.
+                        if len(tempStr) < 2:
+                            raise ValueError(
+                                "MOSFET '" + words[0] + "' has no W/L "
+                                "dimensions — reopen its device model and set "
+                                "the dimensions before converting.")
                         dimension = tempStr[1]
                         # Replace last word with library name
                         # words[-1] = libname.split('.')[0]
@@ -712,7 +767,19 @@ class Convert:
                         deviceLine[index] = words
                         includeLine.append(".include " + libname)
 
-                        shutil.copy2(libAbsPath, projpath)
+                        # A library file that was moved/renamed/unplugged
+                        # between selection and Convert used to raise a raw
+                        # FileNotFoundError; surface it clearly.
+                        try:
+                            shutil.copy2(libAbsPath, projpath)
+                        except OSError as copy_err:
+                            raise FileNotFoundError(
+                                "Device-model library '" + libname +
+                                "' could not be copied from " + libpath +
+                                " — it may have been moved, renamed or is on "
+                                "an unavailable drive. (" +
+                                str(copy_err) + ")"
+                            ) from copy_err
 
                     elif eachline[0:6] == 'scmode':
                         (filepath, filemname) = os.path.split(self.clarg1)
@@ -720,14 +787,17 @@ class Convert:
                         print("==============================================")
                         print("Writing to the .spiceinit file to " +
                               "make ngspice SKY130 compatible")
-                        self.writefile = open(self.Fileopen, "w")
-                        self.writefile.write('''
+                        # `with` so the handle is closed even on write error;
+                        # num_threads from the actual CPU count, not a hardcoded 8.
+                        num_threads = os.cpu_count() or 4
+                        with open(self.Fileopen, "w") as self.writefile:
+                            self.writefile.write('''
 set ngbehavior=hsa     ; set compatibility for reading PDK libs
 set ng_nomodcheck      ; don't check the model parameters
-set num_threads=8      ; CPU hardware threads available
+set num_threads={0}      ; CPU hardware threads available
 option noinit          ; don't print operating point data
 optran 0 0 0 100p 2n 0 ; don't use dc operating point, but transient op)
-''')
+'''.format(num_threads))
                         print("==============================================")
 
                         libs = '''
@@ -738,8 +808,9 @@ sky130_fd_pr__model__linear.model.spice
 sky130_fd_pr__model__pnp.model.spice
 sky130_fd_pr__model__r+c.model.spice
 '''
+                        corner = tempStr[1] if len(tempStr) > 1 else "tt"
                         includeLine.append(
-                            ".lib \"" + libAbsPath + "\" " + tempStr[1])
+                            ".lib \"" + libAbsPath + "\" " + corner)
                         for i in libs.split():
                             includeLine.append(
                                 ".include \"" + libAbsPath.replace(
@@ -760,7 +831,16 @@ sky130_fd_pr__model__r+c.model.spice
                         deviceLine[index] = words
                         includeLine.append(".include " + libname)
 
-                        shutil.copy2(completeLibPath, projpath)
+                        try:
+                            shutil.copy2(completeLibPath, projpath)
+                        except OSError as copy_err:
+                            raise FileNotFoundError(
+                                "Device-model library '" +
+                                os.path.basename(completeLibPath) +
+                                "' could not be copied — it may have been "
+                                "moved, renamed or is on an unavailable "
+                                "drive. (" + str(copy_err) + ")"
+                            ) from copy_err
 
             # Adding device line to schematicInfo
             for index, value in deviceLine.items():
@@ -788,7 +868,7 @@ sky130_fd_pr__model__r+c.model.spice
 
         if len(self.obj_track.subcircuitList) != len(
                 self.obj_track.subcircuitTrack):
-            self.msg = QtWidgets.QErrorMessage()
+            self.msg = Dialogs.make_error_message(None)
             self.msg.setModal(True)
             self.msg.setWindowTitle("Error Message")
             self.msg.showMessage(
@@ -815,11 +895,31 @@ sky130_fd_pr__model__r+c.model.spice
 
                     src = completeSubPath
                     dst = projpath
-                    print(os.listdir(src))
-                    for files in os.listdir(src):
+                    # A subcircuit directory that was moved/renamed/unplugged
+                    # between selection and Convert used to raise a raw
+                    # FileNotFoundError from os.listdir; surface it.
+                    try:
+                        sub_files = os.listdir(src)
+                    except OSError as list_err:
+                        raise FileNotFoundError(
+                            "Subcircuit directory '" + src + "' is not "
+                            "available — it may have been moved, renamed or "
+                            "is on an unavailable drive. (" +
+                            str(list_err) + ")"
+                        ) from list_err
+                    print(sub_files)
+                    for files in sub_files:
                         if os.path.isfile(os.path.join(src, files)):
                             if files != "analysis":
-                                shutil.copy2(os.path.join(src, files), dst)
+                                try:
+                                    shutil.copy2(
+                                        os.path.join(src, files), dst)
+                                except OSError as copy_err:
+                                    raise FileNotFoundError(
+                                        "Subcircuit file '" + files +
+                                        "' could not be copied from " + src +
+                                        ". (" + str(copy_err) + ")"
+                                    ) from copy_err
 
             # Adding subcircuit line to schematicInfo
             for index, value in subLine.items():
@@ -837,11 +937,15 @@ sky130_fd_pr__model__r+c.model.spice
     def getReferenceName(self, libname, libpath):
         libname = libname.replace('.lib', '.xml')
         library = os.path.join(libpath, libname)
+        fallback = os.path.splitext(libname)[0]
 
         # Extracting Value from XML
-        libtree = ET.parse(library)
-        for child in libtree.iter():
-            if child.tag == 'ref_model':
-                retVal = child.text
-
-        return retVal
+        try:
+            libtree = ET.parse(library)
+            for child in libtree.iter():
+                if child.tag == 'ref_model' and child.text:
+                    return child.text
+            raise ValueError("ref_model is missing or empty")
+        except Exception as exc:
+            self._record_error(library, exc)
+            return fallback

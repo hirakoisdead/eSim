@@ -162,16 +162,16 @@ graph TB
 | `docs/` | 📁 Directory | **Sphinx documentation** — RST files for ReadTheDocs auto-generated developer docs |
 | `code/` | 📁 Directory | **Sphinx autodoc config** — mirrors `src/` structure for API documentation generation |
 | `flatpak/` | 📁 Directory | **Flatpak packaging** — manifest and wrapper scripts for universal Linux distribution |
-| `appimage/` | 📁 Directory | **AppImage packaging** — build scripts for portable Linux AppImage bundles |
+| `appimage/` | 📁 Directory | Legacy AppImage contribution, retained for future modernization; not verified for eSim 2.6 |
 | `docker-launcher/` | 📁 Directory | **Docker support** — Dockerfile, launcher script, and CI workflows for containerized builds |
-| `snap/` | 📁 Directory | **Snap packaging** — `snapcraft.yaml` for building Snap packages |
+| `snap/` | 📁 Directory | Legacy Snap manifest, retained for future maintenance; not verified for eSim 2.6 |
 | `ihp/` | 📁 Directory | **IHP PDK integration** — install script, `.spiceinit` config, NMOS example, and ngspice latest installer for IHP SG13G2 SiGe BiCMOS PDK |
 | `patches/` | 📁 Directory | **Source patches** — patch files for modifying Ngspice/GHDL behavior in sandboxed environments |
 | `.github/` | 📁 Directory | **GitHub config** — issue templates, PR templates, and CI/CD workflow definitions |
 | `setup.py` | 📄 File | Python package configuration for pip installation |
 | `requirements.txt` | 📄 File | Python dependency list (PyQt6, matplotlib, numpy, scipy, etc.) |
 | `conf.py` | 📄 File | Sphinx documentation configuration |
-| `VERSION` | 📄 File | Current version identifier (`2.5`) |
+| `VERSION` | 📄 File | Current version identifier (`2.6`) |
 | `INSTALL` | 📄 File | Detailed multi-platform installation instructions |
 | `LICENSE` | 📄 File | GNU General Public License v3.0 |
 
@@ -217,10 +217,11 @@ src/
 │
 ├── maker/                   # Makerchip & NgVeri Integration
 │   ├── Maker.py             # Makerchip IDE integration (23K)
+│   ├── MakerchipBridge.py   # Secure browser-plugin/file bridge
 │   ├── NgVeri.py            # Verilog-to-Ngspice model generator (17K)
 │   ├── ModelGeneration.py   # Auto model generation pipeline (48K)
 │   ├── createkicad.py       # KiCad symbol creation for models (14K)
-│   ├── makerchip.py         # Makerchip cloud IDE connector (3K)
+│   ├── makerchip.py         # HDL Flow Navigator entry widget (3K)
 │   └── Appconfig.py         # Maker-specific configuration (2K)
 │
 ├── converter/               # Schematic Format Converters
@@ -326,8 +327,8 @@ src/
 | Platform | Method | Status |
 |:---------|:-------|:------:|
 | **All Linux** (Fedora, Ubuntu, openSUSE, Arch, etc.) | Flatpak | ✅ Recommended |
-| **Ubuntu** 22.04 / 23.04 / 24.04 LTS | Native Installer | ✅ Supported |
-| **Windows** 8 / 10 / 11 | Windows Installer | ✅ Supported |
+| **Ubuntu** 24.04 LTS / 25.04 / 26.04 LTS | Native Installer | ✅ Supported |
+| **Windows** 10 / 11 | Windows Installer | ✅ Supported |
 | **Docker** (any OS) | Docker Container | ✅ Supported |
 
 ### 🐧 Linux — Flatpak (Recommended for all distributions)
@@ -353,10 +354,32 @@ flatpak run org.fossee.eSim
 
 ### 🐧 Ubuntu — Native Installer
 
+**eSim 2.6 quick install** — paste this in a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/FOSSEE/eSim/v2.6/Ubuntu/bootstrap.sh \
+  | ESIM_BRANCH=v2.6 bash
+```
+
+This pins both the bootstrap script and downloaded source to the eSim 2.6
+release. It becomes available after FOSSEE tags the merged commit as `v2.6`.
+
+For a moving development snapshot, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/FOSSEE/eSim/master/Ubuntu/bootstrap.sh | bash
+```
+
+Upgrading from an older eSim
+2.x? Same line — the installer sweeps old-eSim artifacts and installs
+cleanly on top.
+
+Prefer a manual download? The zip flow below runs the exact same installer:
+
 ```bash
 # 1. Download and extract eSim
-unzip eSim-2.5.zip
-cd eSim-2.5
+unzip eSim-2.6-ubuntu.zip
+cd eSim-2.6
 
 # 2. Install eSim with all dependencies
 chmod +x install-eSim.sh
@@ -408,13 +431,13 @@ chmod +x ihp/install-ngspice-latest.sh
 |:---------|:-----|:--------|
 | Docker Image Build | `.github/workflows/docker-image.yml` | Builds and publishes the eSim Docker image |
 | Docker Launcher Build | `.github/workflows/docker-launcher-build.yml` | Builds the cross-platform Python launcher |
-| Ubuntu Release | `.github/workflows/release_ubuntu.yml` | Automated Ubuntu `.deb` package builds |
+| Ubuntu Release | `.github/workflows/release_ubuntu.yml` | Builds the Ubuntu release zip and SHA-256 checksum |
 
 | Packaging Format | Directory | Description |
 |:-----------------|:----------|:------------|
 | Flatpak | `flatpak/` | Universal Linux package via Flathub |
-| AppImage | `appimage/` | Portable single-file Linux executable |
-| Snap | `snap/` | Ubuntu Snap Store package |
+| AppImage | `appimage/` | Legacy contribution; not a verified eSim 2.6 release path |
+| Snap | `snap/` | Legacy manifest; not a verified eSim 2.6 release path |
 | Docker | `docker-launcher/` | Containerized distribution with GUI forwarding |
 
 ---

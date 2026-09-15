@@ -1,0 +1,15 @@
+# Ignore everything in this directory EXCEPT the two models eSim ships.
+#
+# This is a RUNTIME directory: the legacy NgVeri (Verilator) flow writes
+# <model>.xml here for every model a user adds, and NgVeri._list_models reads
+# it back. Local models must never be committed -- they would ship to every
+# user of the release.
+#
+# The two exceptions below are upstream demo models that arrived with the
+# sky130-fd-pr PDK + analog IPs (37b9194b, 2022) and are part of what eSim
+# distributes. Do not add to this list without deciding it belongs in a
+# release.
+*
+!.gitignore
+!dvsd_8_bit_priority_encoder.xml
+!vsdserializer_v1.xml

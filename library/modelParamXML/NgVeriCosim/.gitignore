@@ -1,0 +1,10 @@
+# Ignore everything in this directory
+#
+# This is a RUNTIME directory: NgVeri's d_cosim flow writes <model>.xml here
+# every time a user adds a Verilog model, and the Remove Models dialog reads
+# it back as the source of truth for what is installed. Nothing here is
+# authored content, so nothing here belongs in a commit -- a stray `git add`
+# ships one developer's local models to every user of the release.
+*
+# Except this file
+!.gitignore

@@ -1,12 +1,12 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 import re
 import numpy as np
 from PyQt6 import QtCore
+from configuration import Dialogs
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QMenu, QMessageBox, QColorDialog, QInputDialog,
-                             QListWidgetItem, QWidget, QPushButton,
+from PyQt6.QtWidgets import (QMenu, QColorDialog, QInputDialog,
+                             QWidget, QPushButton,
                              QGridLayout, QWidgetAction)
-from PyQt6.QtGui import QColor
 from .constants import DEFAULT_LINE_THICKNESS
 from .math_utils import _safe_eval, _canonical_expr
 
@@ -36,6 +36,7 @@ class _FuncTraceMixin:
             if it and it.data(Qt.ItemDataRole.UserRole) == -(f_idx + 1):
                 self._update_func_item_appearance(it, label, color, self._func_visible[f_idx])
                 break
+        self._refresh_select_all_btn()
         self._schedule_refresh()
 
     def _populate_func_color_menu(self, menu: QMenu, f_idx: int) -> None:
@@ -169,10 +170,10 @@ class _FuncTraceMixin:
     def plot_function(self) -> None:
         function_text = self.func_input.text().strip()
         if not function_text:
-            QMessageBox.warning(self, "Input Error", "Function expression cannot be empty.")
+            Dialogs.warning(self, "Input Error", "Function expression cannot be empty.")
             return
         if not hasattr(self.obj_dataext, 'NBList') or not self.obj_dataext.NBList:
-            QMessageBox.warning(self, "No Data", "No simulation data loaded.")
+            Dialogs.warning(self, "No Data", "No simulation data loaded.")
             return
 
         if ' vs ' in function_text:
@@ -194,7 +195,7 @@ class _FuncTraceMixin:
                         ex_canonical = existing_text.replace(' ', '')
                 match = ex_canonical == canonical
                 if match:
-                    QMessageBox.information(
+                    Dialogs.information(
                         self, "Already Plotted",
                         f"'{existing_text}' is already on the plot.\n"
                         "(Note: a+b and b+a are treated as equal.)")
@@ -208,14 +209,14 @@ class _FuncTraceMixin:
             preview = ', '.join(names[:8])
             if len(names) > 8:
                 preview += f'  … ({len(names)} total)'
-            QMessageBox.warning(
+            Dialogs.warning(
                 self, "Evaluation Error",
                 f"{exc}\n\nAvailable traces:\n{preview}\n\n"
                 "Allowed functions: abs sqrt log log10 exp sin cos tan\n"
                 "Allowed operators: + - * / **")
             return
         except Exception as exc:
-            QMessageBox.warning(self, "Evaluation Error", f"Unexpected error: {exc}")
+            Dialogs.warning(self, "Evaluation Error", f"Unexpected error: {exc}")
             return
 
         func_palette = ['#9C27B0', '#FF6D00', '#00897B', '#5E35B1', '#F4511E']
@@ -237,7 +238,7 @@ class _FuncTraceMixin:
         disable Stacked View before plotting.
         """
         if self._current_view_mode == 'stacked':
-            QMessageBox.information(
+            Dialogs.information(
                 self, "Lissajous Plot",
                 "X-Y (Lissajous) plotting requires a single time/frequency axis.\n"
                 "Disable Stacked View first.")
@@ -245,7 +246,7 @@ class _FuncTraceMixin:
         parts = function_text.split(' vs ', 1)
         y_name, x_name = parts[0].strip(), parts[1].strip()
         if not y_name or not x_name:
-            QMessageBox.warning(self, "Syntax Error",
+            Dialogs.warning(self, "Syntax Error",
                                 "Lissajous format: 'signal_y vs signal_x'")
             return
         names = self.obj_dataext.NBList
@@ -254,7 +255,7 @@ class _FuncTraceMixin:
             preview = ', '.join(names[:8])
             if len(names) > 8:
                 preview += f'  … ({len(names)} total)'
-            QMessageBox.warning(
+            Dialogs.warning(
                 self, "Trace Not Found",
                 f"Not found: {', '.join(missing)}\n\nAvailable traces:\n{preview}")
             return
@@ -264,7 +265,7 @@ class _FuncTraceMixin:
         y_data = np.asarray(self.obj_dataext.y[y_idx], dtype=float)
         n = min(len(x_data), len(y_data))
         if n == 0:
-            QMessageBox.warning(self, "No Data", "Selected traces contain no data.")
+            Dialogs.warning(self, "No Data", "Selected traces contain no data.")
             return
         # Remove any previous lissajous line before drawing the new one.
         if self._func_line is not None:

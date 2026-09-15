@@ -1,0 +1,265 @@
+Subject: [PATCH] d_cosim: evaluate the co-simulation at the operating point
+
+A d_cosim block reported all-zero outputs at t=0 and for the whole of the
+first timestep, where an equivalent NgVeri (Verilator) model of the same
+Verilog is already correct.  Any design whose correct initial output is 1 --
+an inverter, a NAND with both inputs low, anything held by a reset -- was
+wrong at the start of every simulation, so the two co-simulation backends
+disagreed on identical sources.
+
+Measured on eSim's three-gate reference circuit (AND + OR + NAND, driven
+through an adc_bridge, read back through a dac_bridge), against the eSim 2.5
+NgVeri run of the same schematic:
+
+    before:  nand output 0 V from t=0 until 2.506 us, then correct
+             "WARNING: output scheduled with impossible delay (-2.504e-06)"
+    after:   nand output 5 V at t=0, no warning
+             logic identical to the 2.5 reference over the full 25 ms
+             every transition within 0.000 ns of the reference
+
+Two things were wrong, one on each side of the d_cosim/ivlng boundary.
+
+1. src/xspice/verilog/vpi.c -- next_advance_cb()
+
+   SPICE asks for time zero at the operating point.  That gives ticks == 0,
+   and the loop went straight back to waiting for a later time, so VVP never
+   executed its time-zero events and never reported the design's initial
+   outputs.  Settle once, using the zero-length set_stop() that output_cb()
+   already uses to gather everything happening at the current instant: a
+   zero-length request registers cbReadWriteSynch instead of cbAfterDelay, so
+   VVP runs the pending events without the clock moving.  Guarded by a new
+   ng_vvp.zero_settled so it happens exactly once and the two time bases stay
+   aligned.
+
+2. src/xspice/icm/digital/d_cosim/cfunc.mod -- ucm_d_cosim()
+
+   The TIME == 0.0 branch pushed inputs into the co-simulator and returned
+   without running it, leaving every output at the ZERO written during INIT.
+   The co-simulation was first stepped to time zero down in STEP_PENDING,
+   which does not run until the first accepted timestep -- and that also left
+   vtime lagging SPICE time by a whole step, which is what produced the
+   "impossible delay" warning.  Step at the operating point instead and
+   publish the result through a new op_output(), which writes the port state
+   directly rather than scheduling a delayed event, because the operating
+   point has no future: the value is the DC state of the node.  The
+   "first step" test in STEP_PENDING now keys on a new instance.zero_done so
+   it fires exactly once wherever time zero was reached first, and still
+   works as the fallback for an analysis that never calls the model at
+   TIME == 0.
+
+Clocked behaviour is unchanged: on a divide-by-2 flip-flop regression the
+toggle edges land at identical times before and after, and the patch removes
+a spurious 1.5 ns startup glitch on the inverted output.
+---
+diff -Naur a/src/xspice/icm/digital/d_cosim/cfunc.mod b/src/xspice/icm/digital/d_cosim/cfunc.mod
+--- a/src/xspice/icm/digital/d_cosim/cfunc.mod	2025-08-31 19:52:14.000000000 +0530
++++ b/src/xspice/icm/digital/d_cosim/cfunc.mod	2026-07-29 15:50:41.138622100 +0530
+@@ -78,6 +78,7 @@
+     unsigned int    out_ports;   // Number of XSPICE outputs.
+     unsigned int    inout_ports; // Number of XSPICE inout ports.
+     unsigned int    op_pending;  // Output is pending.
++    unsigned int    zero_done;   // Co-simulation has been stepped to time 0.
+     Digital_t      *out_vals;    // The new output values.
+     double          last_step;   // Time of previous accepted step.
+     double          extra;       // Margin to extend timestep.
+@@ -272,6 +273,69 @@
+     ip->op_pending = 0;
+ }
+ 
++/* Publish co-simulator output at the operating point (eSim addition).
++ *
++ * output() above cannot be used here.  It schedules each change as an event
++ * PARAM(delay) after the difference between SPICE time and the co-simulator's
++ * time, but the operating point has no elapsed time and no future: the value
++ * IS the DC state of the node.  So write the port state directly, exactly as
++ * the INIT branch of ucm_d_cosim() establishes the initial ZERO, and keep the
++ * rotating "currently published" storage in step so that the first real
++ * output() during the transient does not re-emit a change already made here.
++ *
++ * OUTPUT_CHANGED is still set, because that is what makes ngspice re-run the
++ * event solver at the operating point and let the new digital state propagate
++ * (to a following dac_bridge, for instance).  It is the same mechanism that
++ * the "Operating point event passes" statistic counts.
++ */
++
++static void op_output(struct instance *ip, ARGS)
++{
++    Digital_t    *out_vals; // XSPICE rotating memory
++    unsigned int  i, j;
++
++    if (!ip->op_pending) {
++        for (i = 0; i < ip->out_ports; ++i)
++            OUTPUT_CHANGED(d_out[i]) = FALSE;
++        for (i = 0; i < ip->inout_ports; ++i)
++            OUTPUT_CHANGED(d_inout[i]) = FALSE;
++        return;
++    }
++
++    out_vals = (Digital_t *)cm_event_get_ptr(1, 0);
++
++    for (i = 0; i < ip->out_ports; ++i) {
++        if (ip->out_vals[i].state != out_vals[i].state ||
++            ip->out_vals[i].strength != out_vals[i].strength) {
++            DBG("OP: OUT %s %d/%d->%d/%d",
++                cm_get_node_name("d_out", i),
++                out_vals[i].state, out_vals[i].strength,
++                ip->out_vals[i].state, ip->out_vals[i].strength);
++            out_vals[i] = ip->out_vals[i];
++            OUTPUT_STATE(d_out[i]) = out_vals[i].state;
++            OUTPUT_STRENGTH(d_out[i]) = out_vals[i].strength;
++            OUTPUT_DELAY(d_out[i]) = PARAM(delay);
++            OUTPUT_CHANGED(d_out[i]) = TRUE;
++        } else {
++            OUTPUT_CHANGED(d_out[i]) = FALSE;
++        }
++    }
++
++    for (i = 0, j = ip->out_ports; i < ip->inout_ports; ++i, ++j) {
++        if (ip->out_vals[j].state != out_vals[j].state ||
++            ip->out_vals[j].strength != out_vals[j].strength) {
++            out_vals[j] = ip->out_vals[j];
++            OUTPUT_STATE(d_inout[i]) = out_vals[j].state;
++            OUTPUT_STRENGTH(d_inout[i]) = out_vals[j].strength;
++            OUTPUT_DELAY(d_inout[i]) = PARAM(delay);
++            OUTPUT_CHANGED(d_inout[i]) = TRUE;
++        } else {
++            OUTPUT_CHANGED(d_inout[i]) = FALSE;
++        }
++    }
++    ip->op_pending = 0;
++}
++
+ /* Run the co-simulation. Return 1 if the timestep was truncated. */
+ 
+ static int advance(struct instance *ip, ARGS)
+@@ -630,7 +694,33 @@
+     in_vals = (Digital_t *)cm_event_get_ptr(0, 0);
+ 
+     if (TIME == 0.0) {
+-        /* Starting, so inputs may be settling. */
++        /* The operating point.  Inputs may still be settling, so ngspice can
++         * call in here more than once ("Operating point event passes" in the
++         * event statistics).
++         *
++         * eSim change: this branch used to push the inputs into the
++         * co-simulator and return WITHOUT running it, leaving every output at
++         * the ZERO that the INIT branch above wrote.  The co-simulation was
++         * first stepped to time zero down in the STEP_PENDING branch, which
++         * does not run until the first accepted timestep.  Consequences:
++         *
++         *   - Any design whose correct output at t=0 is 1 -- an inverter, a
++         *     NAND with both inputs low, anything held by a reset -- reported
++         *     0 through the operating point and the whole of the first
++         *     timestep.  A compiled NgVeri/Verilator model computes its
++         *     outputs on this same call and is right at t=0, so the two
++         *     backends disagreed on identical Verilog.
++         *   - The co-simulator's vtime stayed at 0 while SPICE time reached
++         *     the first timestep, so the first output() computed a negative
++         *     delay and warned "output scheduled with impossible delay".
++         *
++         * Stepping here is free and safe: Cosim_setup() has already started
++         * the client simulator and it is parked at time zero.  Running it
++         * with vtime still 0 only lets it settle its time-zero events, which
++         * is precisely the digital operating point.  A repeat pass re-pushes
++         * the settled inputs and settles again; the client never leaves time
++         * zero, so nothing is replayed and nothing is rewound.
++         */
+ 
+         for (i = 0; i < ip->in_ports; ++i) {
+             Digital_t ival;
+@@ -640,17 +730,20 @@
+             in_vals[i] = ival;
+         }
+ 
+-        for (i = 0; i < ip->out_ports; ++i)
+-            OUTPUT_CHANGED(d_out[i]) = FALSE;
+-
+         for (i = 0; i < ip->inout_ports; ++i) {
+             Digital_t ival;
+ 
+             ival = *(Digital_t *)INPUT(d_inout[i]);
+             (*ip->info.in_fn)(&ip->info, i + ip->in_ports, &ival);
+             in_vals[i + ip->in_ports] = ival;
+-            OUTPUT_CHANGED(d_inout[i]) = FALSE;
+         }
++
++        /* Settle the co-simulation at time zero and publish what it says. */
++
++        ip->info.vtime = 0.0;
++        (*ip->info.step)(&ip->info);
++        ip->zero_done = 1;
++        op_output(ip, XSPICE_ARG);
+         return;
+     }
+ 
+@@ -715,11 +808,21 @@
+          * forward, replaying any saved input events.
+          */
+ 
+-        if (ip->last_step == 0.0) {
++        if (!ip->zero_done) {
+             /* First step.  "Step" the co-simulation to time zero,
+              * as that may trigger initialisations.
++             *
++             * eSim change: the test was "ip->last_step == 0.0", which is also
++             * true after the operating point has already stepped to time zero
++             * (last_step is only set once a step is accepted).  Keying on
++             * zero_done instead means this runs exactly once, wherever time
++             * zero was reached first.  It is still the fallback for an
++             * analysis that never calls the model at TIME == 0, so it must
++             * set the flag itself: unlike last_step, which run() updates on
++             * every accepted step, nothing else clears this one.
+              */
+ 
++            ip->zero_done = 1;
+             if (advance(ip, XSPICE_ARG))
+                 return;
+         }
+diff -Naur a/src/xspice/verilog/icarus_shim.h b/src/xspice/verilog/icarus_shim.h
+--- a/src/xspice/verilog/icarus_shim.h	2025-08-31 19:52:14.000000000 +0530
++++ b/src/xspice/verilog/icarus_shim.h	2026-07-29 15:50:41.184653100 +0530
+@@ -59,6 +59,7 @@
+ struct ng_vvp {
+     struct cr_ctx       cr_ctx;         // Coroutine context.
+     int                 stop;           // Indicates simulation is over.
++    int                 zero_settled;   // Time-zero events have been run.
+     struct co_info     *cosim_context;
+     uint32_t            ins;            // Port counts by type.
+     uint32_t            outs;
+diff -Naur a/src/xspice/verilog/vpi.c b/src/xspice/verilog/vpi.c
+--- a/src/xspice/verilog/vpi.c	2025-08-31 19:52:14.000000000 +0530
++++ b/src/xspice/verilog/vpi.c	2026-07-29 15:50:41.229726000 +0530
+@@ -165,6 +165,33 @@
+             ctx->stop_cb = set_stop(ticks, ctx);
+             return 0;
+         }
++
++        /* eSim change: settle the design once at time zero.
++         *
++         * SPICE asks for time zero at the operating point, which gives
++         * ticks == 0, and the loop above then went straight back to waiting
++         * for a later time -- so VVP never executed its time-zero events and
++         * the design's initial outputs were never reported.  d_cosim was left
++         * publishing the ZERO it writes at INIT, so any design whose correct
++         * initial output is 1 read as 0 until the first timestep, unlike an
++         * equivalent Verilator model.
++         *
++         * set_stop(0) is the mechanism already used by output_cb() below to
++         * gather everything happening at the current instant: a zero-length
++         * request registers cbReadWriteSynch rather than cbAfterDelay, so VVP
++         * runs the pending events at the current time and calls back without
++         * the clock moving.  Doing it once, guarded, keeps the two time bases
++         * aligned: VVP stays at time zero, and the next entry here finds
++         * zero_settled set and parks as before.
++         */
++
++        if (!ctx->zero_settled) {
++            DBG("Settling at time zero (VVP %g, SPICE %g)\n",
++                vl_time, ctx->cosim_context->vtime);
++            ctx->zero_settled = 1;
++            ctx->stop_cb = set_stop(0, ctx);
++            return 0;
++        }
+     }
+ }
+ 

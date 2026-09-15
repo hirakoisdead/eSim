@@ -1,13 +1,17 @@
 import os
 import glob
+import shlex
+import shutil
 import traceback
 from PyQt6 import QtWidgets, QtCore
+from configuration import Dialogs
 from configuration.Appconfig import Appconfig
 from projManagement import Worker
 from projManagement.Validation import Validation
+from projManagement.projectPaths import resolve_stem
 from .NgspicetoModelica import NgMoConverter
 
-BROWSE_LOCATION = '/home'
+BROWSE_LOCATION = os.path.expanduser('~')
 
 
 class OpenModelicaEditor(QtWidgets.QWidget):
@@ -17,45 +21,174 @@ class OpenModelicaEditor(QtWidgets.QWidget):
         self.obj_validation = Validation()
         self.obj_appconfig = Appconfig()
         self.projDir = dir
-        self.projName = os.path.basename(self.projDir)
+        # Resolve the stem from the .proj anchor, not the folder basename —
+        # renamed/imported projects have folder name != file stem, and the
+        # rest of the app already anchors on resolve_stem (cf. convertSub.py).
+        if self.projDir:
+            stem, _status = resolve_stem(str(self.projDir), 'proj')
+            self.projName = stem or os.path.basename(self.projDir)
+        else:
+            self.projName = ''
         self.ngspiceNetlist = os.path.join(
             self.projDir, self.projName + ".cir.out")
         self.modelicaNetlist = os.path.join(self.projDir, "*.mo")
         self.map_json = Appconfig.modelica_map_json
 
-        self.grid = QtWidgets.QGridLayout()
+        # ── Layout ────────────────────────────────────────────────────
+        # Full-bleed two-pane workspace that uses the whole dock: a header
+        # band across the top, the controls on the left, and a contextual
+        # "How it works" panel on the right so the width is filled with
+        # something useful instead of dead space. The body is centred
+        # vertically so it never marroons at the top of a tall dock.
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(32, 28, 32, 28)
+        outer.setSpacing(18)
+
+        # Header band
+        title = QtWidgets.QLabel("Ngspice → OpenModelica")
+        title.setProperty("cssClass", "title")
+        subtitle = QtWidgets.QLabel(
+            "Convert an Ngspice netlist into a Modelica model, then open "
+            "it in OMEdit."
+        )
+        subtitle.setProperty("cssClass", "muted")
+        subtitle.setWordWrap(True)
+        outer.addWidget(title)
+        outer.addWidget(subtitle)
+
+        outer.addStretch(1)
+
+        # Body — controls (left) beside guidance (right), spanning the dock.
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(24)
+
+        controls = QtWidgets.QVBoxLayout()
+        controls.setSpacing(18)
+
+        # ── Step 1 · Convert netlist ──────────────────────────────────
+        convertGroup = QtWidgets.QGroupBox("Step 1  ·  Convert netlist")
+        convertForm = QtWidgets.QVBoxLayout(convertGroup)
+        convertForm.setContentsMargins(16, 20, 16, 16)
+        convertForm.setSpacing(8)
+
+        convertForm.addWidget(QtWidgets.QLabel("Ngspice netlist (*.cir.out)"))
+
         self.FileEdit = QtWidgets.QLineEdit()
         self.FileEdit.setText(self.ngspiceNetlist)
-        self.grid.addWidget(self.FileEdit, 0, 0)
+        self.FileEdit.setPlaceholderText(
+            "Path to the Ngspice netlist (*.cir.out)")
+        self.FileEdit.setClearButtonEnabled(True)
 
-        self.browsebtn = QtWidgets.QPushButton("Browse Netlist (*.cir.out)")
+        self.browsebtn = QtWidgets.QPushButton("Browse…")
+        self.browsebtn.setProperty("cssClass", "secondary")
         self.browsebtn.clicked.connect(self.browseFile)
-        self.grid.addWidget(self.browsebtn, 0, 1)
 
-        self.convertbtn = QtWidgets.QPushButton("Convert")
+        netlistRow = QtWidgets.QHBoxLayout()
+        netlistRow.setSpacing(8)
+        netlistRow.addWidget(self.FileEdit, 1)
+        netlistRow.addWidget(self.browsebtn)
+        convertForm.addLayout(netlistRow)
+
+        self.convertbtn = QtWidgets.QPushButton("Convert to Modelica")
+        # Primary action of this converter — only one bold button per view.
+        self.convertbtn.setProperty("cssClass", "primary")
         self.convertbtn.clicked.connect(self.callConverter)
-        self.grid.addWidget(self.convertbtn, 2, 1)
 
-        self.loadOMbtn = QtWidgets.QPushButton("Load OMEdit")
-        self.loadOMbtn.clicked.connect(self.callOMEdit)
-        self.grid.addWidget(self.loadOMbtn, 3, 1)
+        convertActions = QtWidgets.QHBoxLayout()
+        convertActions.addStretch(1)
+        convertActions.addWidget(self.convertbtn)
+        convertForm.addSpacing(2)
+        convertForm.addLayout(convertActions)
+
+        controls.addWidget(convertGroup)
+
+        # ── Step 2 · Open in OMEdit ───────────────────────────────────
+        omGroup = QtWidgets.QGroupBox("Step 2  ·  Open in OMEdit")
+        omForm = QtWidgets.QVBoxLayout(omGroup)
+        omForm.setContentsMargins(16, 20, 16, 16)
+        omForm.setSpacing(8)
+
+        omForm.addWidget(QtWidgets.QLabel("OpenModelica install folder"))
 
         self.OMPathtext = QtWidgets.QLineEdit()
         self.OMPathtext.setText("")
-        self.grid.addWidget(self.OMPathtext, 4, 0)
+        self.OMPathtext.setPlaceholderText(
+            "Folder that contains the OMEdit executable")
+        self.OMPathtext.setClearButtonEnabled(True)
 
-        self.OMPathbrowsebtn = QtWidgets.QPushButton("Browse OM")
+        self.OMPathbrowsebtn = QtWidgets.QPushButton("Browse…")
+        self.OMPathbrowsebtn.setProperty("cssClass", "secondary")
         self.OMPathbrowsebtn.clicked.connect(self.OMPathbrowseFile)
-        self.grid.addWidget(self.OMPathbrowsebtn, 4, 1)
 
-        # self.setGeometry(300, 300, 350, 300)
-        self.setLayout(self.grid)
-        self.show()
+        omRow = QtWidgets.QHBoxLayout()
+        omRow.setSpacing(8)
+        omRow.addWidget(self.OMPathtext, 1)
+        omRow.addWidget(self.OMPathbrowsebtn)
+        omForm.addLayout(omRow)
+
+        self.loadOMbtn = QtWidgets.QPushButton("Load OMEdit")
+        self.loadOMbtn.clicked.connect(self.callOMEdit)
+
+        omActions = QtWidgets.QHBoxLayout()
+        omActions.addStretch(1)
+        omActions.addWidget(self.loadOMbtn)
+        omForm.addSpacing(2)
+        omForm.addLayout(omActions)
+
+        controls.addWidget(omGroup)
+        controls.addStretch(1)
+
+        # ── Guidance pane (right) ─────────────────────────────────────
+        # Genuine help that also lets the workspace fill the dock width
+        # instead of a marooned column.
+        guideGroup = QtWidgets.QGroupBox("How it works")
+        guide = QtWidgets.QVBoxLayout(guideGroup)
+        guide.setContentsMargins(16, 20, 16, 16)
+        guide.setSpacing(12)
+
+        for step in (
+            "1.  Choose your Ngspice netlist (*.cir.out).",
+            "2.  Convert to Modelica — a .mo model is written next to "
+            "the netlist.",
+            "3.  Point to your OpenModelica folder, then Load OMEdit to "
+            "open the model.",
+        ):
+            lbl = QtWidgets.QLabel(step)
+            lbl.setWordWrap(True)
+            guide.addWidget(lbl)
+
+        guide.addSpacing(6)
+        note = QtWidgets.QLabel(
+            "The generated .mo file is saved in the same folder as the "
+            "selected netlist."
+        )
+        note.setProperty("cssClass", "muted")
+        note.setWordWrap(True)
+        guide.addWidget(note)
+
+        link = QtWidgets.QLabel(
+            "Don’t have OpenModelica? Download it from "
+            "<a href=\"https://openmodelica.org/download/download-linux\">"
+            "openmodelica.org</a>."
+        )
+        link.setProperty("cssClass", "muted")
+        link.setWordWrap(True)
+        link.setOpenExternalLinks(True)
+        link.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        guide.addWidget(link)
+        guide.addStretch(1)
+
+        body.addLayout(controls, 3)
+        body.addWidget(guideGroup, 2)
+
+        outer.addLayout(body)
+        outer.addStretch(1)
+
 
     def OMPathbrowseFile(self):
         temp = QtCore.QDir.toNativeSeparators(
             QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Open OpenModelica Directory", "home"
+                self, "Open OpenModelica Directory", BROWSE_LOCATION
             )
         )
 
@@ -79,18 +212,35 @@ class OpenModelicaEditor(QtWidgets.QWidget):
         dir_name = os.path.dirname(os.path.realpath(self.ngspiceNetlist))
         # file_basename = os.path.basename(self.ngspiceNetlist)
 
-        cwd = os.getcwd()
-        os.chdir(dir_name)
-
-        obj_NgMoConverter = NgMoConverter(self.map_json)
-
+        # No os.chdir: the converter is passed dir_name explicitly and writes
+        # the .mo via absolute paths, so mutating the process CWD here bought
+        # nothing and raced with any concurrent CWD-relative code on the GUI
+        # thread (the map_json is absolute too).
         try:
+            obj_NgMoConverter = NgMoConverter(self.map_json)
             # Getting all the require information
             lines = obj_NgMoConverter.readNetlist(self.ngspiceNetlist)
             # print("Complete Lines of Ngspice netlist : " +
             # "lines ---------------->", lines)
             optionInfo, schematicInfo = \
                 obj_NgMoConverter.separateNetlistInfo(lines)
+
+            # An empty or comment-only netlist parses cleanly all the way down
+            # to a bare skeleton .mo with no components, which then reported a
+            # false "successfully converted" result and wrote an empty model.
+            # schematicInfo holds every device / source / subckt-instance line;
+            # if it is empty there is nothing to convert -- report it and write
+            # no output file instead of pretending success.
+            if not schematicInfo:
+                self.msg = Dialogs.make_error_message(self)
+                self.msg.setModal(True)
+                self.msg.setWindowTitle("Conversion Error")
+                self.msg.showMessage(
+                    'The Ngspice netlist has no circuit elements to convert. '
+                    'Generate the netlist first (Convert KiCad to Ngspice), '
+                    'then retry.'
+                )
+                return
             # print("All option details like analysis,subckt,.ic,.model  :" +
             # "OptionInfo------------------->", optionInfo)
             # print("Schematic connection info :schematicInfo", schematicInfo)
@@ -209,23 +359,30 @@ class OpenModelicaEditor(QtWidgets.QWidget):
 
             out.close()
 
-            os.chdir(cwd)
-
-            self.msg = QtWidgets.QMessageBox()
-            self.msg.setText(
-                "Ngspice netlist successfully converted to OpenModelica " +
-                "netlist"
-            )
-            self.obj_appconfig.print_info(
-                "Ngspice netlist successfully converted to OpenModelica " +
-                "netlist"
-            )
+            base_msg = ("Ngspice netlist successfully converted to "
+                        "OpenModelica netlist")
+            skipped = getattr(obj_NgMoConverter, "skipped", [])
+            self.msg = Dialogs.make_message_box(self)
+            if skipped:
+                # Do not pretend the model is complete: some parameters had no
+                # Modelica equivalent and were left out. Name them so the user
+                # can check the .mo instead of discovering the gap in OMEdit.
+                preview = ", ".join(skipped[:12])
+                if len(skipped) > 12:
+                    preview += ", …"
+                detail = ("%s, with %d unsupported parameter(s) skipped: %s"
+                          % (base_msg, len(skipped), preview))
+                self.msg.setText(detail)
+                self.obj_appconfig.print_warning(detail)
+            else:
+                self.msg.setText(base_msg)
+                self.obj_appconfig.print_info(base_msg)
             self.msg.exec()
 
-        except BaseException as e:
+        except Exception as e:
             traceback.print_exc()
             print("================")
-            self.msg = QtWidgets.QErrorMessage()
+            self.msg = Dialogs.make_error_message(self)
             self.msg.setModal(True)
             self.msg.setWindowTitle("Conversion Error")
             self.msg.showMessage(
@@ -237,16 +394,29 @@ class OpenModelicaEditor(QtWidgets.QWidget):
 
         try:
             modelFiles = glob.glob(self.modelicaNetlist)
-            modelFiles = ' '.join(file for file in modelFiles)
-            self.cmd2 = self.OMPath+"/OMEdit " + modelFiles
+            # Resolve the OMEdit binary from the user-supplied folder, else
+            # from PATH. Quote every path (binary + each .mo) so folders or
+            # files containing spaces don't shatter into bogus args when the
+            # WorkerThread shlex.split()s the command.
+            ompath = self.OMPathtext.text().strip()
+            if ompath:
+                ombin = os.path.join(ompath, "OMEdit")
+            else:
+                ombin = shutil.which("OMEdit")
+            if not ombin:
+                raise FileNotFoundError("OMEdit executable not found")
+            self.cmd2 = " ".join(
+                [shlex.quote(ombin)] + [shlex.quote(f) for f in modelFiles]
+            )
             print(self.cmd2)
             self.obj_workThread2 = Worker.WorkerThread(self.cmd2)
             self.obj_workThread2.start()
             print("OMEdit called")
             self.obj_appconfig.print_info("OMEdit called")
 
-        except BaseException:
-            self.msg = QtWidgets.QMessageBox()
+        except Exception as e:
+            traceback.print_exc()
+            self.msg = Dialogs.make_message_box(self)
             self.msgContent = (
                 "There was an error while opening OMEdit.<br/>"
                 "Please make sure OpenModelica is installed in your"
@@ -262,5 +432,6 @@ class OpenModelicaEditor(QtWidgets.QWidget):
             self.msg.setTextFormat(QtCore.Qt.TextFormat.RichText)
             self.msg.setText(self.msgContent)
             self.msg.setWindowTitle("Missing OpenModelica")
-            self.obj_appconfig.print_info(self.msgContent)
+            self.obj_appconfig.print_info(
+                self.msgContent + " [" + repr(e) + "]")
             self.msg.exec()

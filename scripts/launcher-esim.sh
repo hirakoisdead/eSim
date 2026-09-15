@@ -8,6 +8,5 @@ export QT_LOGGING_RULES="qt5.*=false"  # Suppress Qt debug output (optional, rem
 # export QT_QPA_MENUBAR_NO_NATIVE: "1"  # Disable native menu bar
 # export QT_SYSTEM_TRAY_DISABLED: "1"  # Disable system tray integration
 $SNAP/usr/bin/setup-esim.sh
-cd $SNAP/eSim/src/frontEnd
-# Run the Python application
-exec python3 ./Application.py "$@"
+# Resources are anchored to __file__ (configuration.paths); no cd needed.
+exec python3 "$SNAP/eSim/src/frontEnd/Application.py" "$@"

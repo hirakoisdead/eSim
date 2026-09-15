@@ -6,7 +6,8 @@ This module provides integration with Makerchip for digital design and simulatio
 **Features:**
 - Supports digital circuit design using Makerchip.
 - Enables simulation and verification of digital designs.
-- Provides export and import options for Makerchip projects.
+- Opens the current design in Makerchip's supported browser plugin.
+- Autosaves browser edits to the opened file with conflict detection.
 
 **Usage:**
 Refer to the Makerchip integration guide or API documentation for instructions on using this module.

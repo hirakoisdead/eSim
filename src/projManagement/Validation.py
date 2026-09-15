@@ -21,6 +21,8 @@ import os
 import re
 import shutil
 
+from .projectPaths import find_anchors, resolve_stem
+
 
 class Validation:
     """
@@ -45,13 +47,10 @@ class Validation:
             False       => If the folder doesn't contain projName.proj file
         """
         print("Function: Validating Open Project Information")
-        projName = os.path.basename(str(projDir))
-        lookProj = os.path.join(str(projDir), projName + ".proj")
-        # Check existence of project
-        if os.path.exists(lookProj):
-            return True
-        else:
-            return False
+        # A folder is a valid project if it contains any .proj anchor file,
+        # regardless of whether its name matches the folder name. The exact
+        # stem is resolved separately (see projectPaths.resolve_stem).
+        return len(find_anchors(str(projDir), 'proj')) >= 1
 
     def validateNewproj(self, projDir):
         """
@@ -101,20 +100,22 @@ class Validation:
         else:
             return True
 
-    def validateCir(self, projDir):
+    def validateCir(self, projDir, stem=None):
         """
-        Validate if cir file present in the directory with the appropriate .cir
-        file name, same as the project directory base
+        Validate if the project's .cir netlist is present.
 
         @params
-            :projDir    => the path to the project diretory
+            :projDir    => the path to the project directory
+            :stem        => resolved project stem; if omitted it is resolved
+                            from the .proj anchor instead of the folder name
 
         @return
             True
             False
         """
-        projName = os.path.basename(str(projDir))
-        lookCir = os.path.join(str(projDir), projName + ".cir")
+        if stem is None:
+            stem, _status = resolve_stem(str(projDir), 'proj')
+        lookCir = os.path.join(str(projDir), str(stem) + ".cir")
         # Check existence of project
         if os.path.exists(lookCir):
             return True
@@ -132,41 +133,51 @@ class Validation:
                 validation
 
         @return
-            True
-            PORT
-            DIREC
+            "True"     => a matching .subckt with the expected port count
+            "PORT"     => .subckt found but port count differs
+            "DIREC"    => no .sub file in the directory
+            "NOSUBCKT" => .sub file exists but contains no .subckt line
         """
-        subName = os.path.basename(str(subDir))
-        lookSub = os.path.join(str(subDir), subName + ".sub")
-        # Check existence of project
-        if os.path.exists(lookSub):
-            f = open(lookSub)
-            data = f.read()
-            f.close()
-            netlist = data.splitlines()
-            for eachline in netlist:
-                eachline = eachline.strip()
-                if len(eachline) < 1:
-                    continue
-                words = eachline.split()
-                if words[0] == '.subckt':
-                    # The number of ports is specified in this line
-                    # eg. '.subckt ua741 6 7 3' has 3 ports (6, 7 and 3).
-                    numPorts = len(words) - 2
-                    print("Looksub : ", lookSub)
-                    print("Given Number of ports : ", givenNum)
-                    print("Actual Number of ports :", numPorts)
-                    if numPorts != givenNum:
-                        return "PORT"
-                    else:
-                        return "True"
-        else:
+        # Resolve the subcircuit stem from its .sub anchor, not the folder name.
+        subName, _status = resolve_stem(str(subDir), 'sub')
+        lookSub = os.path.join(str(subDir), str(subName) + ".sub")
+        # Read the .sub directly instead of exists()-then-open: the anchor can
+        # vanish (sync client / manual delete) or lock in the gap between the
+        # check and the open, which used to raise FileNotFoundError
+        # on the GUI thread. A missing / unreadable anchor degrades to the same
+        # "no .sub here" terminal code the callers already handle.
+        try:
+            with open(lookSub) as f:
+                data = f.read()
+        except OSError:
             return "DIREC"
+        netlist = data.splitlines()
+        for eachline in netlist:
+            eachline = eachline.strip()
+            if len(eachline) < 1:
+                continue
+            words = eachline.split()
+            if words[0] == '.subckt':
+                # The number of ports is specified in this line
+                # eg. '.subckt ua741 6 7 3' has 3 ports (6, 7 and 3).
+                numPorts = len(words) - 2
+                print("Looksub : ", lookSub)
+                print("Given Number of ports : ", givenNum)
+                print("Actual Number of ports :", numPorts)
+                if numPorts != givenNum:
+                    return "PORT"
+                else:
+                    return "True"
+        # .sub file exists but no ".subckt" line was found — an explicit
+        # terminal value beats falling off the end returning None (which
+        # callers string-compare into a confusing wrong-branch message).
+        return "NOSUBCKT"
 
-    def validateCirOut(self, projDir):
+    def validateCirOut(self, projDir, stem=None):
         """This function checks if ".cir.out" file is present."""
-        projName = os.path.basename(str(projDir))
-        lookCirOut = os.path.join(str(projDir), projName + ".cir.out")
+        if stem is None:
+            stem, _status = resolve_stem(str(projDir), 'proj')
+        lookCirOut = os.path.join(str(projDir), str(stem) + ".cir.out")
         # Check existence of project
         if os.path.exists(lookCirOut):
             return True
@@ -196,24 +207,34 @@ class Validation:
         first = True
         last_line = []
 
-        # Checks if file is empty or not.
-        if os.stat(projDir).st_size == 0:
-            print("File is empty")
-            return False
+        # os.stat / open / read on a path that vanished or locked between the
+        # caller's exists-check and here raises on the GUI thread.
+        # Treat an unreadable / missing / disappearing file as an invalid
+        # subcircuit (return False) — the same terminal the format checks below
+        # already use — instead of crashing into the excepthook.
+        try:
+            # Checks if file is empty or not.
+            if os.stat(projDir).st_size == 0:
+                print("File is empty")
+                return False
 
-        with open(projDir, 'r') as f:
-            for line in f:
-                word = line.split()
-                if len(word) == 0 or word[0][0] == "*":
-                    continue
-                if first:
-                    if word[0] == ".subckt" and word[1] == fileName:
-                        first = False
+            with open(projDir, 'r') as f:
+                for line in f:
+                    word = line.split()
+                    if len(word) == 0 or word[0][0] == "*":
+                        continue
+                    if first:
+                        if (len(word) >= 2 and word[0] == ".subckt"
+                                and word[1] == fileName):
+                            first = False
+                        else:
+                            print("First line not found:", word)
+                            return False
                     else:
-                        print("First line not found:", word)
-                        return False
-                else:
-                    last_line = word
+                        last_line = word
+        except OSError as e:
+            print("Cannot read subcircuit file:", e)
+            return False
 
         if first is True:
             print("First line not found")

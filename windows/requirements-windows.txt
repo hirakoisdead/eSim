@@ -1,0 +1,37 @@
+# Python packages pip-installed into the PRIVATE bundled Python on Windows.
+#
+# On Ubuntu the heavy native deps (PyQt6, matplotlib, numpy) come from
+# apt so they stay ABI-consistent with the system Qt. On Windows there is no
+# system Qt: the PyQt6 wheel bundles its own Qt runtime, so pip wheels are the
+# right source for everything. Keep loose (>=) pins like requirements.txt --
+# the release build freezes whatever it resolved into the installer, and
+# MAINTAINERS-PACKAGING.md says to record `pip freeze` output per release.
+#
+# scipy is deliberately absent: nothing in the tree imports it (verified
+# repo-wide) and it cost 128 MB installed. requirements.txt still lists it
+# for Ubuntu until the dependency review lands there; Optimize-Stage purges it from
+# stages provisioned before this change.
+PyQt6>=6.6
+PyQt6-QScintilla>=2.14
+matplotlib>=3.8
+numpy>=1.26
+psutil>=5.9
+watchdog>=3.0
+# HDL / Makerchip flow (same set install-eSim.sh installs; each is optional at
+# runtime -- eSim degrades gracefully when absent). THIS BLOCK IS PINNED, and
+# the loose-(>=)-pins rationale above does NOT apply to it: the block above is
+# libraries the app imports, where an ABI-consistent latest is what we want;
+# these are external tools the maker flows shell out to, where an unannounced
+# new major silently changes a CLI on a release nobody rebuilt to test it.
+# Keep IN SYNC with the PIP_PINS array in Ubuntu/install-eSim.sh -- both OSes
+# must install the same versions, and windows/tests/test_packaging_pins.py
+# fails the build if the two lists drift.
+#
+# pyhdlparser has no PyPI release. `tarball/master` was a moving ref AND a
+# stale name: upstream renamed the branch to main and GitHub only serves
+# master through a legacy redirect, so the URL silently tracked whatever main
+# pointed at. Pinned to the commit main resolves to today (bump deliberately).
+https://github.com/hdl/pyhdlparser/tarball/e1153ace8ca1e25f9fb53350c41058ef8eb8dacf
+sandpiper-saas>=1.1.0,<2
+# volare is 0.x: the MINOR is its breaking unit, so the ceiling is 0.21.
+volare>=0.20.6,<0.21

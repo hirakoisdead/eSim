@@ -197,10 +197,71 @@ compile_verilog_models() {
 }
 
 
+# Tag used to mark osdi lines this script has commented out, so a later run can
+# recognise its own work and undo it if the .osdi file shows up.
+OSDI_DISABLED_TAG="[disabled by eSim: .osdi not found]"
+
+# Comment out every "osdi <path>" directive in spinit whose target file does not
+# exist, and re-enable any we previously commented out that now does.
+#
+# Why this is needed: ngspice's stock spinit declares an OSDI block listing eight
+# reference models (asmhemt, bjt504t, BSIMBULK107, BSIMCMG, HICUMl0-2.0,
+# psp103_nqs, r2_cmc, vbic_4T_et_cf). ngspice does not ship those as compiled
+# .osdi libraries -- they only exist if someone builds them with OpenVAF. Upstream
+# keeps the block inert by shipping "unset osdi_enabled". We have to flip that
+# switch on to load the IHP models, which also activates the stock block, so every
+# ngspice run would otherwise print:
+#     Error opening osdi lib ".../asmhemt.osdi": No such file or directory!
+#
+# Matching on "file is missing" rather than on a hardcoded model list also covers
+# the case where OpenVAF compiles only a subset of the IHP models.
+sync_osdi_lines() {
+    local spinit="$1"
+    local tmp="${spinit}.esim.$$"
+    local disabled=0 restored=0
+    local line osdi_path
+
+    rm -f "$tmp"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # An active directive:  osdi /path/to/model.osdi
+        if [[ "$line" =~ ^[[:space:]]*osdi[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then
+            osdi_path="${BASH_REMATCH[1]}"
+            if [[ ! -f "$osdi_path" ]]; then
+                printf '* osdi %s  %s\n' "$osdi_path" "$OSDI_DISABLED_TAG" >> "$tmp"
+                disabled=$((disabled + 1))
+                continue
+            fi
+        # One we commented out earlier:  * osdi /path/to/model.osdi [disabled by eSim...]
+        elif [[ "$line" =~ ^\*[[:space:]]*osdi[[:space:]]+([^[:space:]]+).*disabled\ by\ eSim ]]; then
+            osdi_path="${BASH_REMATCH[1]}"
+            if [[ -f "$osdi_path" ]]; then
+                printf ' osdi %s\n' "$osdi_path" >> "$tmp"
+                restored=$((restored + 1))
+                continue
+            fi
+        fi
+
+        printf '%s\n' "$line" >> "$tmp"
+    done < "$spinit"
+
+    # cp onto the existing file rather than mv, so spinit keeps its original mode.
+    cp "$tmp" "$spinit"
+    rm -f "$tmp"
+
+    if [[ "$disabled" -gt 0 ]]; then
+        log "Commented out $disabled osdi line(s) with no matching .osdi file"
+    fi
+    if [[ "$restored" -gt 0 ]]; then
+        log "Re-enabled $restored osdi line(s) whose .osdi file is now present"
+    fi
+}
+
+
 # Configure ngspice to load IHP OSDI models (adds to NGHDL spinit only)
 configure_spiceinit() {
     log "Configuring ngspice to load IHP OSDI models..."
-    
+
     # Add to NGHDL's spinit if it exists
     if [[ -f "$NGHDL_SPINIT" ]]; then
         # Enable OSDI if not already enabled
@@ -208,7 +269,7 @@ configure_spiceinit() {
             sed -i 's/^unset osdi_enabled/set osdi_enabled/' "$NGHDL_SPINIT"
             log "Enabled OSDI support in spinit"
         fi
-        
+
         if ! grep -q "IHP-Open-PDK" "$NGHDL_SPINIT" 2>/dev/null; then
             # Add OSDI loading after the existing osdi block
             echo "" >> "$NGHDL_SPINIT"
@@ -228,11 +289,15 @@ configure_spiceinit() {
         else
             log "IHP models already configured in NGHDL spinit"
         fi
+
+        # Turning on osdi_enabled above also activates ngspice's stock OSDI block,
+        # whose .osdi files are not shipped. Silence the ones that aren't there.
+        sync_osdi_lines "$NGHDL_SPINIT"
     else
         log "⚠️ NGHDL spinit not found at $NGHDL_SPINIT"
         log "   Please install NGHDL first, then re-run IHP installation"
     fi
-    mv $HOME/ihp/IHP-Open-PDK/ihp-sg13g2/libs.tech/ngspice/.spiceinit $HOME/
+
     log "✅ Spiceinit configuration complete"
 }
 
@@ -265,7 +330,14 @@ uninstall_ihp() {
         sed -i '/IHP-Open-PDK/,/End IHP-Open-PDK/d' "$NGHDL_SPINIT"
         echo "Removed IHP entries from NGHDL spinit"
     fi
-    
+
+    # osdi_enabled was only turned on to load the IHP models. With those gone and
+    # no other loadable model left, put the switch back the way ngspice ships it.
+    if [[ -f "$NGHDL_SPINIT" ]] && ! grep -qE '^[[:space:]]*osdi[[:space:]]+' "$NGHDL_SPINIT"; then
+        sed -i 's/^set osdi_enabled/unset osdi_enabled/' "$NGHDL_SPINIT"
+        echo "Restored 'unset osdi_enabled' in NGHDL spinit"
+    fi
+
     log "✅ IHP Open PDK uninstalled successfully"
 }
 

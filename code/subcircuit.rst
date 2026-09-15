@@ -5,8 +5,10 @@ Subcircuit component
 	:maxdepth: 2
 	:caption: Contents:
 	
-	subcircuit/convertSub
+	subcircuit/Subcircuit
 	subcircuit/newSub
 	subcircuit/openSub
-	subcircuit/Subcircuit
+	subcircuit/subPicker
+	subcircuit/convertSub
 	subcircuit/uploadSub
+	subcircuit/subPaths

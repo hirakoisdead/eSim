@@ -14,9 +14,26 @@ DEFAULT_EXPORT_DPI = 300
 MIN_STACKED_PANE_HEIGHT_PX = 120
 DIVIDER_HIT_TOLERANCE_PX = 6
 
+# Largest inter-pane gap the incremental stacked path may carry over from the
+# previous layout, as a fraction of the pane height it would produce. The gap
+# is sampled once and reused verbatim for the new (larger) pane count, so
+# without a ceiling a gap solved when 2 panes were stacked keeps its absolute
+# size while the panes it separates shrink — whitespace grows to dominate the
+# figure. A constrained_layout solve lands near 0.35; exceeding this hands the
+# placement back to the solver for one draw.
+MAX_STACKED_GAP_RATIO = 0.5
+
 # stacked view uses a wider debounce to coalesce a rapid-toggle burst into one rebuild
 REFRESH_DEBOUNCE_MS = 80
 STACKED_REFRESH_DEBOUNCE_MS = 160
+
+# draw-time decimation: lines longer than DECIMATION_MIN_POINTS are drawn as a
+# per-bin min/max envelope (~4 * DECIMATION_BINS points) and re-decimated from
+# the raw arrays on zoom, so deep zoom-in never loses samples
+DECIMATION_MIN_POINTS = 8000
+DECIMATION_BINS = 2000
+# debounce for zoom/pan-triggered re-decimation of on-screen lines
+REDECIMATE_DEBOUNCE_MS = 150
 
 VIBRANT_COLOR_PALETTE = [
     '#E53935',

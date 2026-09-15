@@ -9,15 +9,11 @@
 #include <sys/types.h>
 #include <string.h>
 
-// added
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
 #if defined(__linux__)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 #elif __APPLE__
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -32,6 +28,13 @@
 
 // Should be enough..
 #define MAX_BUF_SIZE 4096
+
+// Size of a VhpiString, i.e. the buffer the testbench hands us across
+// VHPIDIRECT. MUST track c_vhpi_max_string_length in Utility_Package.vhdl:
+// VhpiString is string(1 to c_vhpi_max_string_length), NUL-terminated by
+// Pack_String_To_Vhpi_String, and the generated testbench declares every
+// port's _v variable as a full VhpiString regardless of that port's width.
+#define VHPI_MAX_STRING_LENGTH 1024
 
 // Defualt port number
 

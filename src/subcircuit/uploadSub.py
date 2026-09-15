@@ -1,5 +1,7 @@
 from PyQt6 import QtWidgets, QtCore
 from configuration.Appconfig import Appconfig
+from configuration import paths
+from configuration import Dialogs
 from projManagement.Validation import Validation
 import os
 import shutil
@@ -32,7 +34,7 @@ class UploadSub(QtWidgets.QWidget):
 
         editfile = QtCore.QDir.toNativeSeparators(
             QtWidgets.QFileDialog.getOpenFileName(
-                None, "Upload Subcircuit File",
+                self, "Upload Subcircuit File",
                 os.path.expanduser("~"), "*.sub"
             )[0]
         )
@@ -44,35 +46,24 @@ class UploadSub(QtWidgets.QWidget):
         create_subcircuit, ext = os.path.splitext(upload)
 
         if ext != '.sub':
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage("Please ensure that filename ends with .sub")
-            self.msg.exec()
+            Dialogs.critical(
+                self, "Error Message",
+                "Please ensure that filename ends with .sub")
             print("Invalid filename")
             return
 
         valid = self.obj_validation.validateSubcir(editfile, create_subcircuit)
         if not valid:
-            self.msg = QtWidgets.QErrorMessage(self)
-            self.msg.setModal(True)
-            self.msg.setWindowTitle("Error Message")
-            self.msg.showMessage(
+            Dialogs.critical(
+                self, "Error Message",
                 "Content of file does not meet the required format. " +
                 "Please ensure that file starts with **.subckt " +
                 create_subcircuit + " ** and ends with **.ends " +
-                create_subcircuit + " **"
-            )
-            self.msg.exec()
+                create_subcircuit + " **")
             print("Invalid file format")
             return
 
-        init_path = '../../'
-        if os.name == 'nt':
-            init_path = ''
-
-        subcircuit_path = os.path.join(
-            os.path.abspath(init_path + 'library'),
+        subcircuit_path = paths.library_path(
             'SubcircuitLibrary', create_subcircuit
         )
 
@@ -80,33 +71,40 @@ class UploadSub(QtWidgets.QWidget):
 
         if reply == "VALID":
             print("Validated: Creating subcircuit directory")
-            os.makedirs(subcircuit_path)
             subcircuit = os.path.join(subcircuit_path, upload)
+            # The SubcircuitLibrary lives in the install tree, which is
+            # read-only on a Program Files / system install — the makedirs and
+            # copy used to raise PermissionError onto the crash net. Surface a
+            # clear dialog instead.
+            try:
+                os.makedirs(subcircuit_path)
 
-            print("===================")
-            print("Current path of subcircuit file is " + editfile)
-            print("Selected file is " + upload)
-            print("Final path of file is " + subcircuit)
-            print("===================")
-            shutil.copy(editfile, subcircuit)
+                print("===================")
+                print("Current path of subcircuit file is " + editfile)
+                print("Selected file is " + upload)
+                print("Final path of file is " + subcircuit)
+                print("===================")
+                shutil.copy(editfile, subcircuit)
+            except OSError as e:
+                Dialogs.critical(
+                    self, "Error Message",
+                    "Could not add the subcircuit to the eSim library. The "
+                    "library folder may be read-only (e.g. a Program Files "
+                    "install).\n\n" + str(e))
+                print("Could not write subcircuit: " + str(e))
+                return
 
         elif reply == "CHECKEXIST":
             print("Project name already exists.")
             print("==========================")
-            msg = QtWidgets.QErrorMessage(self)
-            msg.setModal(True)
-            msg.setWindowTitle("Error Message")
-            msg.showMessage(
+            Dialogs.critical(
+                self, "Error Message",
                 "The project already exist. Please select "
                 "a different name or delete existing project")
-            msg.exec()
 
         elif reply == "CHECKNAME":
             print("Name can not contain space between them")
             print("===========================")
-            msg = QtWidgets.QErrorMessage(self)
-            msg.setModal(True)
-            msg.setWindowTitle("Error Message")
-            msg.showMessage(
+            Dialogs.critical(
+                self, "Error Message",
                 'The project name should not contain space between them')
-            msg.exec()

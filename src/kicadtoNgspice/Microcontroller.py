@@ -8,6 +8,8 @@ from xml.etree import ElementTree as ET
 from PyQt6 import QtWidgets, QtCore
 
 from . import TrackWidget
+from configuration import paths
+from projManagement.projectPaths import previous_values_path
 
 
 # Created By Vatsal Patel on 01/07/2022
@@ -22,14 +24,10 @@ class Microcontroller(QtWidgets.QWidget):
         """
         This function is use to keep track of all Device Model widget
         """
-        if os.name == 'nt':
-            self.home = os.path.join('library', 'config')
-        else:
-            self.home = os.path.expanduser('~')
+        self.home = paths.user_home()
 
         self.parser = ConfigParser()
-        self.parser.read(os.path.join(
-            self.home, os.path.join('.nghdl', 'config.ini')))
+        self.parser.read(paths.nghdl_config_path())
         self.nghdl_home = self.parser.get('NGHDL', 'NGHDL_HOME')
 
         self.hexfile = QtCore.QDir.toNativeSeparators(
@@ -61,6 +59,7 @@ class Microcontroller(QtWidgets.QWidget):
             schematicInfo,
             modelList,
             clarg1,
+            track=None,
     ):
 
         QtWidgets.QWidget.__init__(self)
@@ -68,27 +67,33 @@ class Microcontroller(QtWidgets.QWidget):
         # Processing for getting previous values
 
         kicadFile = clarg1
-        (projpath, filename) = os.path.split(kicadFile)
-        project_name = os.path.basename(projpath)
         check = 1
+        # Previous-values restore node. The restore loops below iterate a plain
+        # local ``root`` (mirroring the Model tab); it used to be assigned to
+        # ``self.root`` while the loops read a never-defined bare ``root``, so
+        # every restore raised a NameError swallowed by "Passes previous
+        # values" and the Microcontroller tab never restored anything. Kept as
+        # a local and pre-bound to None so a missing or empty XML
+        # simply skips the restore instead of relying on a caught exception.
+        root = None
         try:
             f = open(
-                os.path.join(projpath, project_name + "_Previous_Values.xml"),
+                previous_values_path(kicadFile),
                 "r",
             )
             tree = ET.parse(f)
             parent_root = tree.getroot()
             for parent in parent_root:
                 if parent.tag == "microcontroller":
-                    self.root = parent
-        except BaseException:
-
+                    root = parent
+        except Exception:
             check = 0
             print("Microcontroller Previous Values XML is Empty")
 
-        # Creating track widget object
-
-        self.obj_trac = TrackWidget.TrackWidget()
+        # Shared per-conversion data bus, injected by the converter window; a
+        # standalone construction falls back to its own instance.
+        self.obj_trac = track if track is not None else \
+            TrackWidget.TrackWidget()
 
         # for increasing row and counting/tracking line edit widget
 
@@ -161,7 +166,7 @@ class Microcontroller(QtWidgets.QWidget):
                             modelbox.setLayout(modelgrid)
                             self.hex_btns.append(addbtn)
                         try:
-                            for child in root:
+                            for child in root if root is not None else []:
                                 if (
                                         child.text == line[2]
                                         and child.tag == line[3]
@@ -169,7 +174,7 @@ class Microcontroller(QtWidgets.QWidget):
                                     self.obj_trac.microcontroller_var[
                                         self.nextcount].setText(child[i].text)
                                     i = i + 1
-                        except BaseException:
+                        except Exception:
                             print("Passes previous values")
 
                         modelgrid.addWidget(
@@ -225,13 +230,13 @@ class Microcontroller(QtWidgets.QWidget):
                         self.grid.addWidget(modelbox)
 
                     try:
-                        for child in root:
+                        for child in root if root is not None else []:
                             if child.text == line[2] and child.tag == line[3]:
                                 self.obj_trac.microcontroller_var[
                                     self.nextcount].setText(child[i].text)
                                 i = i + 1
 
-                    except BaseException:
+                    except Exception:
                         print("Passes previous values")
 
                     modelgrid.addWidget(
@@ -280,4 +285,3 @@ class Microcontroller(QtWidgets.QWidget):
             if check == 0:
                 self.obj_trac.microcontrollerTrack.append(lst)
 
-        self.show()

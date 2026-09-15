@@ -56,7 +56,7 @@ import os
 import logging
 import numpy as np
 from typing import List, Tuple, Optional
-from PyQt6 import QtWidgets
+from configuration import Dialogs
 from configuration.Appconfig import Appconfig
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,6 @@ class DataExtraction:
         numpy reader.  The x axis is taken from the first group only (all
         groups share the same time/frequency axis, as ngspice emits them).
         """
-        cols_per_node = 2 if is_ac else 1
         x_name = 'time'
         all_names: List[str] = []          # output channel names (duplicates kept)
         groups: List[dict] = []            # each: {'indices': [...], 'rows': [str]}
@@ -276,6 +275,12 @@ class DataExtraction:
         if '.tran' in tokens:
             return self.TRANSIENT_ANALYSIS, dec
 
+        # Everything else (.dc, .op, .noise, .disto, …) is plotted on a
+        # linear sweep axis like DC. Log non-.dc directives so an unexpected
+        # analysis type is traceable rather than silently bucketed.
+        if not any(t.lower().startswith('.dc') for t in tokens):
+            logger.debug("Analysis directive %r not AC/Tran/DC; "
+                         "defaulting to DC sweep handling.", tokens[0])
         return self.DC_ANALYSIS, dec
 
     def openFile(self, file_path: str) -> List[int]:
@@ -307,11 +312,31 @@ class DataExtraction:
             except Exception as e:
                 logger.warning(f"Could not parse current file: {e}")
 
+            # ngspice's `print allv` truncates column names to ~15 chars, so
+            # distinct long-named nodes collapse to the same string. Recover the
+            # full names (same column order) from the ASCII rawfile eSim writes
+            # alongside. Count-guarded so a missing/odd rawfile is a no-op.
+            full_v = self._full_voltage_names(
+                os.path.join(file_path, "plot_data.raw"))
+            if len(full_v) == len(v_names):
+                v_names = full_v
+
+            # Digital/event nodes (e.g. d_cosim / adc_bridge outputs) are not in
+            # `print allv`; ngspice's `eprint` writes them to plot_data_event.txt
+            # when present. Resample them onto the analog time axis and fold them
+            # in alongside the voltage traces so they appear in eSim's plots.
+            event_names: List[str] = []
+            event_arrays: List[np.ndarray] = []
+            event_path = os.path.join(file_path, "plot_data_event.txt")
+            if os.path.exists(event_path):
+                event_names, event_arrays = self._parse_event_file(
+                    event_path, x_arr)
+
             self.x = x_arr
-            self.volts_length = len(v_names)
+            self.volts_length = len(v_names) + len(event_names)
             self.NBIList = i_names
-            self.NBList = v_names + i_names
-            self.y = v_arrays + i_arrays
+            self.NBList = v_names + event_names + i_names
+            self.y = v_arrays + event_arrays + i_arrays
 
             # self.data kept as non-empty so numVals() won't crash on old
             # callers that still reach for data[0] - we give it one dummy row
@@ -337,7 +362,7 @@ class DataExtraction:
             logger.error(f"openFile failed: {e}", exc_info=True)
             self.obj_appconfig.print_error(f'DataExtraction error: {e}')
             try:
-                msg = QtWidgets.QErrorMessage()
+                msg = Dialogs.make_error_message(None)
                 msg.setModal(True)
                 msg.setWindowTitle("Error Message")
                 msg.showMessage(f'Unable to open plot data files:\n{e}')
@@ -345,6 +370,122 @@ class DataExtraction:
             except Exception:
                 pass
             return [self.TRANSIENT_ANALYSIS, 0]
+
+    @staticmethod
+    def _full_voltage_names(rawpath: str) -> List[str]:
+        """Read full voltage-node names, in column order, from the ASCII
+        rawfile's Variables section. Returns the inner node name of each
+        ``v(<node>)`` entry (skipping the time scale and current vars), which
+        lines up 1:1 with the `print allv` columns. Empty on any problem.
+        """
+        if not os.path.exists(rawpath):
+            return []
+        names: List[str] = []
+        try:
+            in_vars = False
+            with open(rawpath, 'r', errors='ignore') as f:
+                for line in f:
+                    s = line.strip()
+                    if s.startswith('Variables:'):
+                        in_vars = True
+                        continue
+                    if s.startswith(('Values:', 'Binary:')):
+                        break
+                    if in_vars:
+                        parts = s.split()
+                        if len(parts) >= 2:
+                            nm = parts[1]
+                            low = nm.lower()
+                            if low.startswith('v(') and nm.endswith(')'):
+                                names.append(nm[2:-1])
+        except OSError as e:
+            logger.warning(f"Cannot read rawfile names {rawpath}: {e}")
+            return []
+        return names
+
+    def _parse_event_file(
+        self, filepath: str, tran_x: np.ndarray
+    ) -> Tuple[List[str], List[np.ndarray]]:
+        """Parse an ngspice `eprint` event file and resample onto tran_x.
+
+        eprint format:
+          **** Results Data ****
+          (blank)
+          Time or Step
+          node1
+          node2
+          (blank)
+          <time>    <state1>    <state2>
+          ...
+          **** Messages ****
+
+        States: '0*' -> 0 V, '1*' -> 5 V, 'U*'/'X*'/'Z*' -> 2.5 V. Step-hold
+        resampling places the last event state at each analog time point.
+        """
+        if not os.path.exists(filepath) or tran_x.size == 0:
+            return [], []
+
+        node_names: List[str] = []
+        events: list = []
+        in_data = False
+        header_done = False
+
+        try:
+            with open(filepath, 'r') as f:
+                for line in f:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    if s == '**** Results Data ****':
+                        in_data = True
+                        continue
+                    if not in_data:
+                        continue
+                    if s.startswith('****'):
+                        break
+                    if s == 'Time or Step':
+                        header_done = False
+                        continue
+                    if not header_done:
+                        if s[0].isdigit() or s[0] == '-':
+                            header_done = True
+                        else:
+                            node_names.append(s)
+                            continue
+                    if header_done and s and (s[0].isdigit() or s[0] == '-'):
+                        parts = s.split()
+                        try:
+                            t = float(parts[0])
+                            events.append((t, parts[1:]))
+                        except (ValueError, IndexError):
+                            pass
+        except OSError as e:
+            logger.warning(f"Cannot open event file {filepath}: {e}")
+            return [], []
+
+        if not node_names or not events:
+            return [], []
+
+        # Hi-Z ('Z') has no analog level; park it mid-rail like unknown/U/X.
+        _STATE = {'0': 0.0, '1': 5.0, 'U': 2.5, 'X': 2.5, 'Z': 2.5}
+
+        def _sv(state: str) -> float:
+            return _STATE.get(state[0].upper() if state else 'U', 0.0)
+
+        event_times = np.array([e[0] for e in events], dtype=np.float64)
+        arrays: List[np.ndarray] = []
+        for i in range(len(node_names)):
+            sv = np.array([_sv(e[1][i]) if i < len(e[1]) else 0.0
+                           for e in events], dtype=np.float64)
+            idx = np.clip(
+                np.searchsorted(event_times, tran_x, side='right') - 1,
+                0, len(sv) - 1)
+            arrays.append(sv[idx].copy())
+
+        logger.info(
+            f"Event file parsed: {len(node_names)} nodes, {len(events)} events "
+            f"-> resampled to {len(tran_x)} pts")
+        return node_names, arrays
 
     def computeAxes(self) -> None:
         """

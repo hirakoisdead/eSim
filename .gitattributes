@@ -1,0 +1,107 @@
+# What a USER download must not contain.
+#
+# `export-ignore` drops a path from every archive git generates from this
+# branch. That single fact covers BOTH ways eSim is handed to a user, so the
+# two can never drift apart:
+#
+#   1. curl one-liner  -> Ubuntu/bootstrap.sh fetches
+#      codeload.github.com/.../tar.gz/refs/heads/<branch>, which GitHub builds
+#      with `git archive`. It honours these lines server-side.
+#   2. release zip     -> make-release.sh archives the same commit locally.
+#
+# A `git clone` is NOT an archive, so developers still get everything below.
+# Nothing here is deleted from the branch -- it just stops shipping.
+#
+# Anything the installer touches at runtime MUST NOT be listed here. Verified
+# load-bearing, keep out of this file: VERSION, src/, library/, images/,
+# Examples/, nghdl/, ihp/ (install-eSim.sh runs ihp/ihp-install-script.sh),
+# Ubuntu/ (bootstrap.sh's is_esim_tree() requires Ubuntu/install-eSim.sh),
+# README.md, LICENSE, INSTALL.
+
+# ---- packaging notes (maintainer-facing) ----
+/PACKAGING.md                    export-ignore
+/MAINTAINERS-PACKAGING.md        export-ignore
+
+# ---- contributor / repo furniture ----
+/CONTRIBUTION.md                 export-ignore
+/SECURITY.md                     export-ignore
+/.github/                        export-ignore
+/.travis.yml                     export-ignore
+/.readthedocs.yaml               export-ignore
+/.gitignore                      export-ignore
+/.gitattributes                  export-ignore
+/.DS_Store                       export-ignore
+
+# ---- build & release tooling (the user runs install-eSim.sh, not these) ----
+/make-release.sh                 export-ignore
+/setup.py                        export-ignore
+/requirements.txt                export-ignore
+/scripts/                        export-ignore
+
+# patches/ is maintainer-facing EXCEPT patches/ngspice/, which is part of the
+# Ubuntu install path: install-nghdl.sh applies it to the extracted
+# nghdl-simulator tree. Dropping it from the archive would leave the curl and
+# zip installs building an unpatched simulator -- silently, because a missing
+# patch directory is not an error. So ignore the maintainer patches by name
+# and let patches/ngspice/ ship. (A blanket `/patches/ export-ignore` here
+# would take patches/ngspice/ with it.)
+/patches/*.patch                 export-ignore
+
+# ---- Sphinx doc sources (the built manual is shipped, not its input) ----
+/conf.py                         export-ignore
+/index.rst                       export-ignore
+/code/                           export-ignore
+/docs/                           export-ignore
+
+# ---- Windows-only packaging tree; the curl/zip paths are Ubuntu-only ----
+/windows/                        export-ignore
+
+# ---- legacy packaging contributions (preserved, not released for 2.6) ----
+/appimage/                       export-ignore
+/snap/                           export-ignore
+
+# Preserved legacy text formats contain significant historical whitespace.
+appimage/build-appimage.sh whitespace=-trailing-space
+snap/snapcraft.yaml whitespace=-trailing-space,-blank-at-eof
+src/converter/schematic_converters/ConvertedLibs/*.lib whitespace=-trailing-space
+library/kicadLibrary/eSim-symbols/legacy/*.lib whitespace=-trailing-space
+
+# ---- test suites ----
+/src/conftest.py                 export-ignore
+src/**/tests/                    export-ignore
+# The zip drops Ubuntu/ entirely (make-release.sh flattens the installer to
+# the root), but the curl path tarballs the branch WITH Ubuntu/ -- so this
+# line is what keeps the installer's own tests out of a user download.
+/Ubuntu/tests/                   export-ignore
+
+# ---- regeneratable ngspice output committed into the library ----
+# 427 MB of the 644 MB tree. eSim rewrites these the first time a circuit is
+# simulated; shipping them just makes the download four times bigger.
+*.raw                            export-ignore
+plot_data_*.txt                  export-ignore
+
+# ---- dead duplicate of library/SubcircuitLibrary (55 MB) ----
+# Case-only twin. Every reference in src/ is to the capital-S tree; this one is
+# unreachable. (Upstream carries a remove-duplicate-subcircuitlibrary branch.)
+/library/subcircuitLibrary/       export-ignore
+
+# MSYS2 sh runs these; CRLF from autocrlf checkout breaks them on fresh clones.
+windows/*.sh text eol=lf
+
+# Maintainers also run the release builder from Linux or WSL. Keep its shebang
+# and shell syntax usable even when the checkout was created by Windows Git.
+/make-release.sh text eol=lf
+/VERSION text eol=lf
+
+# Same reasoning, higher stakes: these two ARE the Ubuntu install path. A
+# contributor on Windows with core.autocrlf=true checks them out as CRLF, and
+# an editor that writes the file back verbatim commits them that way -- which
+# ships an installer that dies on the first line with
+#   /bin/bash^M: bad interpreter: No such file or directory
+# Pin them to LF in the working tree so that can never happen.
+Ubuntu/*.sh text eol=lf
+
+# Same again, for the same reason: install-nghdl.sh feeds these to `patch`
+# against an LF source tree. A CRLF checkout on a contributor's Windows box,
+# committed back verbatim, produces a patch that no longer applies.
+patches/ngspice/*.patch text eol=lf
